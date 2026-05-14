@@ -1,0 +1,7 @@
+# regex<TAB>replacement
+\bB\s*N\s*W\b	BMW
+\bBNW\b	BMW
+\bwees\b	VS
+\bV\.?\s*S\.?\b	VS
+\bstraat van Hormuz\b	Straat van Hormuz
+\bzeldzame aarde metalen\b	zeldzame aardmetalen

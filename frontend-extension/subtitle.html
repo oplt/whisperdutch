@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>Live Dutch Subtitles</title>
+</head>
+<body>
+  <main class="app-shell">
+    <details id="topPanel" class="toolbar top-panel" open>
+      <summary class="top-panel-summary">
+        <div>
+          <h1>Live Dutch Subtitles</h1>
+          <p class="muted">Dutch audio → stable Dutch subtitle + final translation</p>
+        </div>
+        <span id="topPanelAction" class="top-panel-action">click to collapse</span>
+      </summary>
+
+      <div class="top-panel-body">
+        <div class="controls">
+        <label>
+          Backend WebSocket
+          <input id="backendUrl" value="ws://127.0.0.1:8000/ws/subtitles" />
+        </label>
+        <label>
+          Translation
+          <select id="targetLang">
+            <option value="en" selected>English</option>
+          </select>
+        </label>
+        <label>
+          Mode
+          <select id="qualityMode">
+            <option value="fast">Fast</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="quality">Quality</option>
+          </select>
+        </label>
+        <label>
+          Dutch font
+          <input id="dutchFontSize" type="number" min="14" max="96" step="1" value="48" />
+        </label>
+        <label>
+          Translation font
+          <input id="translationFontSize" type="number" min="14" max="96" step="1" value="42" />
+        </label>
+        <button id="startBtn">Start capture</button>
+        <button id="stopBtn" disabled>Stop</button>
+        </div>
+      </div>
+    </details>
+
+    <section class="status-grid">
+      <div><strong>Status:</strong> <span id="status">Idle</span></div>
+      <div><strong>Audio:</strong> <span id="audioStatus">Not capturing</span></div>
+      <div><strong>Latency:</strong> <span id="latency">—</span></div>
+    </section>
+
+    <section class="subtitle-panel">
+      <div class="header-row">
+        <span>Current subtitle</span>
+      </div>
+
+      <article id="currentSubtitle" class="current-subtitle empty">
+        <div class="placeholder">Waiting for Dutch speech…</div>
+      </article>
+
+      <details id="historyDrawer" class="history-drawer">
+        <summary class="history-title">
+          <span>History</span>
+          <span class="history-summary-right">
+            <span id="historyCount">0 previous subtitles</span>
+            <span class="history-action">click to open</span>
+          </span>
+        </summary>
+        <div id="historySubtitles" class="history-subtitles"></div>
+      </details>
+    </section>
+  </main>
+
+  <script src="subtitle.js"></script>
+</body>
+</html>
