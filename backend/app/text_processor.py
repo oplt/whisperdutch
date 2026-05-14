@@ -7,22 +7,8 @@ from pathlib import Path
 
 
 DEFAULT_GLOSSARY: dict[str, str] = {
-    # Common Dutch ASR entity/domain fixes seen in business/geopolitics videos.
-    r"\bB\s*N\s*W\b": "BMW",
-    r"\bBNW\b": "BMW",
-    r"\bB N W's\b": "BMW's",
-    r"\bwees\b": "VS",
-    r"\bV\.?\s*S\.?\b": "VS",
-    r"\bde Verenigde Staten\b": "de Verenigde Staten",
-    r"\bstraat van Hormuz\b": "Straat van Hormuz",
-    r"\bde straat van Hormuz\b": "de Straat van Hormuz",
-    r"\bardmetalen\b": "aardmetalen",
-    r"\bAardmetalen\b": "Aardmetalen",
-    r"\bzeldzame aarde metalen\b": "zeldzame aardmetalen",
-    r"\bchip\s*s\b": "chips",
-    r"\bIran\b": "Iran",
-    r"\bChina\b": "China",
-    r"\bPakistan\b": "Pakistan",
+    # Intentionally empty by default.
+    # Domain/entity corrections should be user-controlled via config/glossary.tsv.
 }
 
 CONNECTOR_ENDINGS = {
@@ -34,7 +20,7 @@ CONNECTOR_ENDINGS = {
 
 @dataclass
 class DutchTextProcessor:
-    glossary_enabled: bool = field(default_factory=lambda: _env_bool("GLOSSARY_ENABLED", True))
+    glossary_enabled: bool = field(default_factory=lambda: _env_bool("GLOSSARY_ENABLED", False))
     custom_glossary_path: str = field(default_factory=lambda: os.getenv("GLOSSARY_PATH", ""))
     _rules: list[tuple[re.Pattern[str], str]] = field(default_factory=list, init=False)
 

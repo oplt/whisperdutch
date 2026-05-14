@@ -9,6 +9,15 @@ if [ -d ".venv" ]; then
   source ".venv/bin/activate"
 fi
 
+mkdir -p logs
+
+# Daily logging. App logs are written to backend/logs/backend-YYYY-MM-DD.log.
+export BACKEND_LOG_DIR="${BACKEND_LOG_DIR:-logs}"
+export BACKEND_LOG_PREFIX="${BACKEND_LOG_PREFIX:-backend}"
+export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+# Keep subtitle text out of logs by default. Set LOG_TRANSCRIPT_TEXT=1 only while debugging.
+export LOG_TRANSCRIPT_TEXT="${LOG_TRANSCRIPT_TEXT:-0}"
+
 # Stable precision-first defaults for RTX 3060 12 GB.
 # For lower latency, run: ASR_MODEL=small ./run_gpu.sh
 export ASR_DEVICE="${ASR_DEVICE:-cuda}"
@@ -20,13 +29,13 @@ export FAST_ASR_BEAM_SIZE="${FAST_ASR_BEAM_SIZE:-1}"
 export BALANCED_ASR_BEAM_SIZE="${BALANCED_ASR_BEAM_SIZE:-2}"
 export QUALITY_ASR_BEAM_SIZE="${QUALITY_ASR_BEAM_SIZE:-3}"
 export ASR_CONDITION_ON_PREVIOUS_TEXT="${ASR_CONDITION_ON_PREVIOUS_TEXT:-0}"
-export ASR_INITIAL_PROMPT="${ASR_INITIAL_PROMPT:-Dit is een Nederlandstalige video of nieuwsuitzending over geopolitiek, technologie, China, Iran, de VS, BMW, chips, olie, de Straat van Hormuz en zeldzame aardmetalen.}"
+export ASR_INITIAL_PROMPT="${ASR_INITIAL_PROMPT:-}"
 
 # Stable sentence construction.
 # No unstable live partials are shown; each UI row contains Dutch + translation together.
 export SENTENCE_MODE="${SENTENCE_MODE:-1}"
 export DROP_FILLERS="${DROP_FILLERS:-1}"
-export GLOSSARY_ENABLED="${GLOSSARY_ENABLED:-1}"
+export GLOSSARY_ENABLED="${GLOSSARY_ENABLED:-0}"
 export GLOSSARY_PATH="${GLOSSARY_PATH:-config/glossary.tsv}"
 export MIN_SPEECH_SECONDS="${MIN_SPEECH_SECONDS:-0.35}"
 export MIN_FINAL_WORDS="${MIN_FINAL_WORDS:-4}"

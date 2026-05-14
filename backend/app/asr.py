@@ -7,6 +7,10 @@ from typing import Any
 import numpy as np
 from faster_whisper import WhisperModel
 
+from .logger import get_logger
+
+logger = get_logger("asr")
+
 
 def _torch_cuda_info() -> dict[str, Any]:
     try:
@@ -48,10 +52,12 @@ class TranscriptionEngine:
         )
         self.cpu_threads = int(os.getenv("ASR_CPU_THREADS", "4"))
 
-        print(
-            f"[ASR] Loading faster-whisper model={self.model_name} "
-            f"device={self.device} compute_type={self.compute_type}",
-            flush=True,
+        logger.info(
+            "asr_model_loading model=%s device=%s compute_type=%s cpu_threads=%s",
+            self.model_name,
+            self.device,
+            self.compute_type,
+            self.cpu_threads,
         )
         self.model = WhisperModel(
             self.model_name,
@@ -59,7 +65,7 @@ class TranscriptionEngine:
             compute_type=self.compute_type,
             cpu_threads=self.cpu_threads,
         )
-        print(f"[ASR] Ready: {self.info()}", flush=True)
+        logger.info("asr_model_ready info=%s", self.info())
 
     def info(self) -> dict[str, Any]:
         return {
@@ -71,8 +77,10 @@ class TranscriptionEngine:
         }
 
     def warmup(self) -> None:
+        logger.info("asr_warmup_started")
         audio = np.zeros(16000, dtype=np.float32)
         _ = self.transcribe_dutch(audio, mode="fast")
+        logger.info("asr_warmup_completed")
 
     def transcribe_dutch(self, audio_16k: np.ndarray, prompt: str | None = None, mode: str = "balanced") -> str:
         """Transcribe one 16 kHz float32 mono audio segment."""
@@ -87,6 +95,7 @@ class TranscriptionEngine:
         else:
             beam_size = int(os.getenv("BALANCED_ASR_BEAM_SIZE", os.getenv("ASR_BEAM_SIZE", "2")))
 
+        logger.debug("asr_transcribe_started samples=%s mode=%s beam_size=%s prompt_present=%s", audio_16k.size, mode, beam_size, bool(prompt))
         segments, _info = self.model.transcribe(
             audio_16k,
             language=os.getenv("ASR_LANGUAGE", "nl"),
@@ -102,7 +111,9 @@ class TranscriptionEngine:
             without_timestamps=True,
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
-        return _clean_text(text)
+        cleaned = _clean_text(text)
+        logger.debug("asr_transcribe_completed chars=%s", len(cleaned))
+        return cleaned
 
 
 def _clean_text(text: str) -> str:

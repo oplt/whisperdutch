@@ -5,6 +5,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .logger import get_logger
+
+logger = get_logger("translator")
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -58,7 +62,7 @@ class TranslationEngine:
         else:
             raise ValueError("TRANSLATION_ENGINE must be auto, ctranslate2, or transformers")
 
-        print(f"[TRANSLATION] Ready: {self.info()}", flush=True)
+        logger.info("translation_model_ready info=%s", self.info())
 
     def _load_ctranslate2(self) -> None:
         import ctranslate2
@@ -70,10 +74,12 @@ class TranslationEngine:
                 f"CTranslate2 model not found: {model_path}. Run scripts/prepare_translation_ct2.sh first."
             )
 
-        print(
-            f"[TRANSLATION] Loading CTranslate2 model={model_path} tokenizer={self.tokenizer_name} "
-            f"device={self.device} compute_type={self.compute_type}",
-            flush=True,
+        logger.info(
+            "translation_ctranslate2_loading model=%s tokenizer=%s device=%s compute_type=%s",
+            model_path,
+            self.tokenizer_name,
+            self.device,
+            self.compute_type,
         )
         self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
         self.translator = ctranslate2.Translator(str(model_path), device=self.device, compute_type=self.compute_type)
@@ -84,7 +90,7 @@ class TranslationEngine:
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
         model_name = os.getenv("TRANSFORMERS_TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-nl-en")
-        print(f"[TRANSLATION] Loading Transformers model={model_name} device={self.device}", flush=True)
+        logger.info("translation_transformers_loading model=%s device=%s", model_name, self.device)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
         self.model.to(self.device)
@@ -107,7 +113,9 @@ class TranslationEngine:
         }
 
     def warmup(self) -> None:
+        logger.info("translation_warmup_started")
         _ = self.translate("Hallo, dit is een test.")
+        logger.info("translation_warmup_completed")
 
     def translate(self, text: str) -> str:
         text = " ".join(text.strip().split())
@@ -115,16 +123,20 @@ class TranslationEngine:
             return ""
         cached = self.cache.get(text)
         if cached is not None:
+            logger.debug("translation_cache_hit chars=%s", len(text))
             return cached
 
+        logger.debug("translation_started engine=%s chars=%s", self.engine, len(text))
         if self.engine == "ctranslate2":
             translated = self._translate_ctranslate2(text)
         else:
             translated = self._translate_transformers(text)
 
         if len(self.cache) >= self.max_cache_items:
+            logger.info("translation_cache_cleared max_items=%s", self.max_cache_items)
             self.cache.clear()
         self.cache[text] = translated
+        logger.debug("translation_completed output_chars=%s", len(translated))
         return translated
 
     def _translate_ctranslate2(self, text: str) -> str:

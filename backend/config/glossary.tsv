@@ -1,7 +1,3 @@
-# regex<TAB>replacement
-\bB\s*N\s*W\b	BMW
-\bBNW\b	BMW
-\bwees\b	VS
-\bV\.?\s*S\.?\b	VS
-\bstraat van Hormuz\b	Straat van Hormuz
-\bzeldzame aarde metalen\b	zeldzame aardmetalen
+# Optional user-controlled glossary corrections.
+# Format: regex<TAB>replacement
+# Keep this empty for generic translation. Add only terms relevant to the current video.

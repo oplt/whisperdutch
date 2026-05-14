@@ -107,10 +107,17 @@ class SentenceAssembler:
         return normalize_fragment(self._buffer)
 
     def context_prompt(self) -> str | None:
-        static_prompt = os.getenv(
-            "ASR_INITIAL_PROMPT",
-            "Dit is een Nederlandstalige video of nieuwsuitzending over geopolitiek, technologie, China, Iran, de VS, BMW, chips, olie, de Straat van Hormuz en zeldzame aardmetalen.",
-        ).strip()
+        """Return optional ASR context without forcing any topic/domain.
+
+        ASR_INITIAL_PROMPT is intentionally empty by default. This app must
+        transcribe/translate any Dutch video, not bias the model toward a
+        specific news/geopolitics frame. If the user wants a per-video hint,
+        they can set ASR_INITIAL_PROMPT manually before launching the backend.
+
+        We still append a short window of recent finalized Dutch text to help
+        Whisper keep continuity across audio chunks.
+        """
+        static_prompt = os.getenv("ASR_INITIAL_PROMPT", "").strip()
         dynamic = " ".join([*self._recent, self._buffer]).strip()
         prompt = " ".join(part for part in [static_prompt, dynamic[-self.context_chars:]] if part).strip()
         return prompt or None
