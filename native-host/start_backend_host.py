@@ -8,6 +8,7 @@ import struct
 import subprocess
 import sys
 import time
+from datetime import date
 import urllib.request
 from pathlib import Path
 
@@ -15,7 +16,11 @@ HOST_NAME = "com.polatozgur111.dutch_subtitle_backend"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = PROJECT_ROOT / "backend"
 RUN_SCRIPT = BACKEND_DIR / "run_gpu.sh"
-LOG_FILE = BACKEND_DIR / "backend.log"
+LOG_DIR = BACKEND_DIR / "logs"
+
+
+def native_log_file() -> Path:
+    return LOG_DIR / f"native-host-{date.today().isoformat()}.log"
 PID_FILE = BACKEND_DIR / "backend.pid"
 HEALTH_URL = "http://127.0.0.1:8000/health"
 
@@ -86,15 +91,20 @@ def start_backend() -> dict:
     if not RUN_SCRIPT.exists():
         return {"ok": False, "error": f"Cannot find {RUN_SCRIPT}"}
 
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    log = open(LOG_FILE, "ab", buffering=0)
+    log_path = native_log_file()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log = open(log_path, "ab", buffering=0)
     log.write(f"\n\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting backend via native host\n".encode())
 
     env = os.environ.copy()
     env.setdefault("ASR_DEVICE", "cuda")
     env.setdefault("ASR_MODEL", "small")
     env.setdefault("ASR_COMPUTE_TYPE", "float16")
-    env.setdefault("TRANSLATION_DEVICE", "cuda")
+    env.setdefault("TRANSLATION_DEVICE", "cpu")
+    env.setdefault("BACKEND_LOG_DIR", "logs")
+    env.setdefault("BACKEND_LOG_PREFIX", "backend")
+    env.setdefault("LOG_LEVEL", "INFO")
+    env.setdefault("LOG_TRANSCRIPT_TEXT", "0")
 
     process = subprocess.Popen(
         ["bash", str(RUN_SCRIPT)],
@@ -107,13 +117,34 @@ def start_backend() -> dict:
         close_fds=True,
     )
     PID_FILE.write_text(str(process.pid))
+    for _attempt in range(30):
+        time.sleep(0.5)
+        if is_backend_healthy(timeout=0.4):
+            return {
+                "ok": True,
+                "status": "ready",
+                "pid": process.pid,
+                "message": "Backend is ready.",
+                "log_file": str(log_path),
+            }
+        return_code = process.poll()
+        if return_code is not None:
+            try:
+                PID_FILE.unlink()
+            except FileNotFoundError:
+                pass
+            return {
+                "ok": False,
+                "error": f"Backend exited with code {return_code}. Check {log_path}",
+                "log_file": str(log_path),
+            }
 
     return {
         "ok": True,
         "status": "started",
         "pid": process.pid,
         "message": "Backend process started. Model loading can take a moment.",
-        "log_file": str(LOG_FILE),
+        "log_file": str(log_path),
     }
 
 

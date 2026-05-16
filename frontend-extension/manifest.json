@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAl6N3MLxUOPiZZzYnpAl7PUtvStGfC5Ng9rmr+dM5KjX0MJNraqgpcw5Z2IWyuqTQJ+k4irb5rDOGf+GupXk5jYAkCXapCEsEdrzJXmvcKA1wUtV/I+dxixb4lQrQtOMbpf6UaebHqY4lOB15uiPzVny38BKtes/uX1KfFWosAR3Hv1P608M75EMoGt+THZM9nNit+YHNsJIHgHl9wurb1zEjOVovVNphrH0Dd1ZBuAEdAkb2IzFA3z1idi7q6OXxSpHdXh5JRQB1m+6VT6kq6dNskYmMYUDHBtD2pZ+I6CxSlG0AXMMHQrzEUcgllgyzk4KUV0irIIU46D6LbWYjJQIDAQAB",
-  "name": "Dutch Live Subtitle Translator - Stacked UI",
+  "name": "Dutch Live Subtitle Translator - Daily Logging",
   "description": "Capture tab audio, transcribe Dutch locally, and show translated subtitles in a popup window.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "permissions": [
     "activeTab",
     "tabs",

@@ -1,4 +1,6 @@
 const TARGET_SAMPLE_RATE = 16000;
+const CLIENT_LOG_ENDPOINT = "http://127.0.0.1:8000/api/logs/client";
+const BACKEND_LOGS_ENDPOINT = "http://127.0.0.1:8000/api/logs/recent";
 
 const params = new URLSearchParams(location.search);
 const tabId = Number(params.get("tabId"));
@@ -19,6 +21,8 @@ const historyDrawerEl = document.getElementById("historyDrawer");
 const historyCountEl = document.getElementById("historyCount");
 const topPanelEl = document.getElementById("topPanel");
 const topPanelActionEl = document.getElementById("topPanelAction");
+const frontendLogsEl = document.getElementById("frontendLogs");
+const refreshLogsBtn = document.getElementById("refreshLogsBtn");
 
 let ws = null;
 let mediaStream = null;
@@ -40,14 +44,62 @@ translationFontSizeEl.addEventListener("input", () => updateFontSizes(true));
 window.addEventListener("beforeunload", stopCapture);
 if (historyDrawerEl) historyDrawerEl.addEventListener("toggle", updateHistorySummary);
 if (topPanelEl) topPanelEl.addEventListener("toggle", updateTopPanelSummary);
+if (refreshLogsBtn) refreshLogsBtn.addEventListener("click", refreshBackendLogs);
 
+logClient("info", "subtitle_window_loaded", { tabId });
 updateFontSizes(false);
 loadModePreference();
 loadTopPanelPreference();
 updateHistorySummary();
 updateTopPanelSummary(false);
 
+function logClient(level, message, context = {}) {
+  const record = {
+    ts: new Date().toISOString(),
+    level,
+    source: "subtitle-window",
+    message,
+    context
+  };
+
+  const line = `${record.ts} ${level.toUpperCase()} ${message} ${Object.keys(context).length ? JSON.stringify(context) : ""}`;
+  if (frontendLogsEl) {
+    frontendLogsEl.textContent = `${line}\n${frontendLogsEl.textContent || ""}`.slice(0, 30000);
+  }
+
+  try {
+    const method = level === "error" ? "error" : level === "warn" ? "warn" : "log";
+    console[method]("[DutchSubtitles]", message, context);
+  } catch (_err) {}
+
+  fetch(CLIENT_LOG_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(record),
+    keepalive: true
+  }).catch(() => {});
+}
+
+async function refreshBackendLogs(event) {
+  if (event) event.preventDefault();
+  try {
+    const response = await fetch(`${BACKEND_LOGS_ENDPOINT}?lines=180`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (frontendLogsEl) {
+      frontendLogsEl.textContent = [
+        `--- backend log: ${data.log_file || "unknown"} ---`,
+        ...(data.lines || [])
+      ].join("\n");
+    }
+    logClient("info", "backend_logs_refreshed", { lines: (data.lines || []).length });
+  } catch (err) {
+    logClient("error", "backend_logs_refresh_failed", { error: err?.message || String(err) });
+  }
+}
+
 async function startCapture() {
+  logClient("info", "start_capture_clicked", { tabId, mode: qualityModeEl.value });
   if (!tabId || Number.isNaN(tabId)) {
     setStatus("Missing tab id. Reopen the extension from a video tab.", true);
     return;
@@ -61,24 +113,29 @@ async function startCapture() {
 
   try {
     setStatus("Connecting to backend...");
+    logClient("info", "connecting_websocket", { url: backendUrlEl.value.trim() });
     ws = await connectWebSocket(backendUrlEl.value.trim());
     sendConfigIfOpen();
 
     setStatus("Requesting tab audio permission...");
     mediaStream = await captureTabAudio(tabId);
+    logClient("info", "tab_audio_capture_ready", { tracks: mediaStream.getTracks().length });
 
     setStatus("Starting audio pipeline...");
     await startAudioPipeline(mediaStream);
 
     audioStatusEl.textContent = "Capturing tab audio";
     setStatus("Running");
+    logClient("info", "capture_running", { sampleRate: TARGET_SAMPLE_RATE });
   } catch (err) {
+    logClient("error", "start_capture_failed", { error: err?.message || String(err) });
     setStatus(err?.message || String(err), true);
     await stopCapture();
   }
 }
 
 async function stopCapture() {
+  logClient("info", "stop_capture_requested");
   startBtn.disabled = false;
   stopBtn.disabled = true;
   audioStatusEl.textContent = "Not capturing";
@@ -108,11 +165,13 @@ async function stopCapture() {
   monitorGain = null;
 
   setStatus("Stopped");
+  logClient("info", "capture_stopped");
 }
 
 function sendConfigIfOpen() {
   localStorage.setItem("subtitleQualityMode", qualityModeEl.value);
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  logClient("info", "config_sent", { mode: qualityModeEl.value, targetLang: targetLangEl.value });
   ws.send(JSON.stringify({
     type: "config",
     sample_rate: TARGET_SAMPLE_RATE,
@@ -133,15 +192,18 @@ function connectWebSocket(url) {
 
     socket.onopen = () => {
       clearTimeout(timeout);
+      logClient("info", "websocket_open", { url });
       resolve(socket);
     };
 
     socket.onerror = () => {
       clearTimeout(timeout);
+      logClient("error", "websocket_error", { url });
       reject(new Error("Could not connect to backend WebSocket."));
     };
 
     socket.onclose = () => {
+      logClient("warn", "websocket_closed");
       if (ws === socket) setStatus("Backend connection closed", true);
     };
 
@@ -149,8 +211,8 @@ function connectWebSocket(url) {
       try {
         const payload = JSON.parse(event.data);
         handleBackendMessage(payload);
-      } catch (_err) {
-        // Ignore non-JSON messages.
+      } catch (err) {
+        logClient("error", "websocket_invalid_json", { error: err?.message || String(err) });
       }
     };
   });
@@ -158,13 +220,18 @@ function connectWebSocket(url) {
 
 function handleBackendMessage(payload) {
   if (payload.type === "ready") {
+    logClient("info", "backend_ready", { clientId: payload.client_id });
     setStatus("Backend ready");
     return;
   }
 
-  if (payload.type === "config_ack") return;
+  if (payload.type === "config_ack") {
+    logClient("info", "config_ack", payload.config || {});
+    return;
+  }
 
   if (payload.type === "error") {
+    logClient("error", "backend_error_event", { message: payload.message || "Backend error" });
     setStatus(payload.message || "Backend error", true);
     return;
   }
@@ -189,6 +256,7 @@ function handleBackendMessage(payload) {
 
   if (payload.type === "final_pending") {
     if (!payload.dutch) return;
+    logClient("info", "final_pending_received", { id: payload.id, asrLatencyMs: payload.asr_latency_ms, audioSeconds: payload.audio_seconds });
     stablePartialText = "";
     showFinalPending(payload);
     if (typeof payload.latency_ms === "number") {
@@ -199,6 +267,7 @@ function handleBackendMessage(payload) {
 
   if (payload.type === "final") {
     if (!payload.dutch) return;
+    logClient("info", "final_translation_received", { id: payload.id, asrLatencyMs: payload.asr_latency_ms, translationLatencyMs: payload.translation_latency_ms, totalLatencyMs: payload.latency_ms });
     stablePartialText = "";
     updateFinalTranslation(payload);
     if (typeof payload.latency_ms === "number") {
@@ -214,10 +283,12 @@ function captureTabAudio(targetTabId) {
     chrome.tabCapture.getMediaStreamId({ targetTabId }, async streamId => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
+        logClient("error", "tab_capture_stream_id_failed", { error: lastError.message });
         reject(new Error(lastError.message));
         return;
       }
       if (!streamId) {
+        logClient("error", "tab_capture_stream_id_missing");
         reject(new Error("Could not obtain tab audio stream id."));
         return;
       }
@@ -234,6 +305,7 @@ function captureTabAudio(targetTabId) {
         });
         resolve(stream);
       } catch (err) {
+        logClient("error", "get_user_media_tab_audio_failed", { error: err?.message || String(err) });
         reject(err);
       }
     });
@@ -242,6 +314,7 @@ function captureTabAudio(targetTabId) {
 
 async function startAudioPipeline(stream) {
   audioContext = new AudioContext({ latencyHint: "interactive" });
+  logClient("info", "audio_context_created", { sampleRate: audioContext.sampleRate });
   await audioContext.audioWorklet.addModule("worklet.js");
 
   mediaSource = audioContext.createMediaStreamSource(stream);

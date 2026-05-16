@@ -9,6 +9,25 @@ if [ -d ".venv" ]; then
   source ".venv/bin/activate"
 fi
 
+if [ -f ".env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    echo "Neither python nor python3 was found in PATH." >&2
+    exit 127
+  fi
+fi
+
 mkdir -p logs
 
 # Daily logging. App logs are written to backend/logs/backend-YYYY-MM-DD.log.
@@ -60,18 +79,20 @@ export TRANSLATION_COMPUTE_TYPE="${TRANSLATION_COMPUTE_TYPE:-int8}"
 export TRANSLATION_BEAM_SIZE="${TRANSLATION_BEAM_SIZE:-1}"
 export TRANSLATION_CACHE_ITEMS="${TRANSLATION_CACHE_ITEMS:-4096}"
 
-python - <<'PY'
+"$PYTHON_BIN" - <<'PY'
+import os
+
 try:
-    import torch
-    print('torch:', torch.__version__)
-    print('cuda available:', torch.cuda.is_available())
-    print('cuda version:', torch.version.cuda)
-    if torch.cuda.is_available():
-        print('gpu:', torch.cuda.get_device_name(0))
-    else:
-        raise SystemExit('CUDA is not available to PyTorch. Fix CUDA/PyTorch install before running the server.')
+    import ctranslate2
+
+    print('ctranslate2:', ctranslate2.__version__)
+    get_cuda_count = getattr(ctranslate2, 'get_cuda_device_count', None)
+    cuda_count = get_cuda_count() if get_cuda_count else 0
+    print('ctranslate2 cuda devices:', cuda_count)
+    if os.getenv('ASR_DEVICE', 'cuda').lower() == 'cuda' and cuda_count < 1:
+        raise SystemExit('CTranslate2 cannot see a CUDA GPU. Fix CUDA/CTranslate2 install or set ASR_DEVICE=cpu.')
 except ImportError:
-    raise SystemExit('PyTorch is not installed. Install a CUDA PyTorch wheel before running ./run_gpu.sh')
+    raise SystemExit('CTranslate2 is not installed. Run: python3 -m pip install -r requirements.txt')
 PY
 
-exec python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+exec "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8000

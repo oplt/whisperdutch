@@ -25,6 +25,14 @@ def _torch_cuda_available() -> bool:
         return False
 
 
+def _torch_available() -> bool:
+    try:
+        import torch  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 class TranslationEngine:
     """
     Dutch -> English translation engine.
@@ -53,7 +61,15 @@ class TranslationEngine:
         self.device = "cuda" if requested_device != "cpu" and _torch_cuda_available() else "cpu"
 
         if self.engine == "auto":
-            self.engine = "ctranslate2" if Path(self.model_name).exists() else "transformers"
+            if Path(self.model_name).exists():
+                self.engine = "ctranslate2"
+            elif _torch_available():
+                self.engine = "transformers"
+            else:
+                raise RuntimeError(
+                    f"CTranslate2 model not found: {self.model_name}. "
+                    "Run backend/scripts/prepare_translation_ct2.sh, or install PyTorch for transformers fallback."
+                )
 
         if self.engine == "ctranslate2":
             self._load_ctranslate2()

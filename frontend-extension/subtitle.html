@@ -12,7 +12,6 @@
       <summary class="top-panel-summary">
         <div>
           <h1>Live Dutch Subtitles</h1>
-          <p class="muted">Dutch audio → stable Dutch subtitle + final translation</p>
         </div>
         <span id="topPanelAction" class="top-panel-action">click to collapse</span>
       </summary>
@@ -47,15 +46,18 @@
         </label>
         <button id="startBtn">Start capture</button>
         <button id="stopBtn" disabled>Stop</button>
+          <section class="status-grid">
+            <div><strong>Status:</strong> <span id="status">Idle</span></div>
+            <div><strong>Audio:</strong> <span id="audioStatus">Not capturing</span></div>
+            <div><strong>Latency:</strong> <span id="latency">—</span></div>
+          </section>
         </div>
+
       </div>
+
     </details>
 
-    <section class="status-grid">
-      <div><strong>Status:</strong> <span id="status">Idle</span></div>
-      <div><strong>Audio:</strong> <span id="audioStatus">Not capturing</span></div>
-      <div><strong>Latency:</strong> <span id="latency">—</span></div>
-    </section>
+
 
     <section class="subtitle-panel">
       <div class="header-row">
@@ -76,6 +78,8 @@
         </summary>
         <div id="historySubtitles" class="history-subtitles"></div>
       </details>
+
+
     </section>
   </main>
 

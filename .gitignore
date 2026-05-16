@@ -321,6 +321,8 @@ pyrightconfig.json
 /backend/hf_cache/
 /backend/ct2_models/
 /backend/translation_models/
+/backend/logs
+/backend/backend.log
 
 # Hugging Face / Torch caches if stored inside project
 .cache/

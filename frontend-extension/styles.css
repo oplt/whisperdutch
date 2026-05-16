@@ -15,7 +15,7 @@
 
 body {
   margin: 0;
-  min-width: 360px;
+  min-width: 200px;
   background: #0f172a;
   color: #e5e7eb;
 }
@@ -28,17 +28,17 @@ select {
 
 button {
   border: 0;
-  border-radius: 10px;
-  padding: 10px 14px;
+  border-radius: 5px;
+  padding: 5px 5px;
   background: #38bdf8;
   color: #06283b;
-  font-weight: 700;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
 }
 
 button:hover:not(:disabled) {
-  filter: brightness(1.05);
+  filter: brightness(1.5);
 }
 
 button:disabled {
@@ -65,8 +65,8 @@ label {
 }
 
 h1 {
-  margin: 0;
-  font-size: 22px;
+  margin: 5px;
+  font-size: 15px;
 }
 
 p {
@@ -74,18 +74,20 @@ p {
 }
 
 .popup-body {
-  width: 360px;
-  min-height: 180px;
+  width: 180px;
+  min-height: 80px;
 }
 
 .popup-card {
-  padding: 18px;
+  padding: 10px;
 }
 
-.popup-card button {
-  margin-top: 16px;
-  width: 100%;
+.popup-card .muted {
+  font-size: 11px;
+  margin-top: 10px;
+  text-align: center;
 }
+
 
 .app-shell {
   display: grid;
@@ -411,4 +413,123 @@ p {
   .subtitle-row {
     padding: 16px 16px 28px;
   }
+}
+
+/* Logging panel */
+.logs-drawer {
+  min-height: 0;
+  border-top: 1px solid #1f2937;
+  background: #020617;
+}
+
+.logs-drawer summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.logs-drawer summary::-webkit-details-marker {
+  display: none;
+}
+
+.logs-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: #111827;
+  border-bottom: 1px solid #1f2937;
+  color: #93c5fd;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.logs-title::before {
+  content: "▸";
+  padding-left: 16px;
+  color: #64748b;
+}
+
+.logs-drawer[open] .logs-title::before {
+  content: "▾";
+}
+
+.logs-title span {
+  padding: 14px 20px;
+}
+
+.logs-title .history-summary-right {
+  padding-right: 12px;
+}
+
+.small-button {
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.frontend-logs {
+  display: none;
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px 16px;
+  background: #020617;
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.logs-drawer[open] .frontend-logs {
+  display: block;
+}
+
+.popup-logs {
+  margin-top: 14px;
+  border-top: 1px solid #1f2937;
+  padding-top: 10px;
+}
+
+.popup-logs summary {
+  cursor: pointer;
+  color: #93c5fd;
+  font-weight: 700;
+}
+
+.popup-logs button {
+  margin-top: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.popup-logs pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 10px;
+  background: #020617;
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.button-group {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.button-group button {
+  margin-top: 0;  /* Override the existing margin-top: 16px */
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 12px;
+  white-space: normal;  /* Allow text to wrap if needed */
+  word-break: keep-all;
 }
