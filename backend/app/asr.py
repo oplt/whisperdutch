@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
@@ -10,6 +11,12 @@ from faster_whisper import WhisperModel
 from .logger import get_logger
 
 logger = get_logger("asr")
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    text: str
+    quality: dict[str, Any]
 
 
 def _torch_cuda_info() -> dict[str, Any]:
@@ -83,9 +90,12 @@ class TranscriptionEngine:
         logger.info("asr_warmup_completed")
 
     def transcribe_dutch(self, audio_16k: np.ndarray, prompt: str | None = None, mode: str = "balanced") -> str:
+        return self.transcribe_dutch_result(audio_16k, prompt=prompt, mode=mode).text
+
+    def transcribe_dutch_result(self, audio_16k: np.ndarray, prompt: str | None = None, mode: str = "balanced") -> TranscriptionResult:
         """Transcribe one 16 kHz float32 mono audio segment."""
         if audio_16k.size < 1600:
-            return ""
+            return TranscriptionResult("", {"level": "empty", "reason": "too_short"})
 
         mode = (mode or "balanced").lower()
         if mode == "fast":
@@ -110,15 +120,51 @@ class TranscriptionEngine:
             compression_ratio_threshold=float(os.getenv("ASR_COMPRESSION_RATIO_THRESHOLD", "2.4")),
             without_timestamps=True,
         )
-        text = " ".join(seg.text.strip() for seg in segments).strip()
+        segment_list = list(segments)
+        text = " ".join(seg.text.strip() for seg in segment_list).strip()
         cleaned = _clean_text(text)
+        quality = _quality_from_segments(segment_list)
         logger.debug("asr_transcribe_completed chars=%s", len(cleaned))
-        return cleaned
+        return TranscriptionResult(cleaned, quality)
 
 
 def _clean_text(text: str) -> str:
     text = " ".join(text.replace("\n", " ").split())
     return text.strip()
+
+
+def _quality_from_segments(segments: list[Any]) -> dict[str, Any]:
+    if not segments:
+        return {"level": "empty", "reason": "no_segments"}
+    no_speech_values = [float(getattr(seg, "no_speech_prob", 0.0) or 0.0) for seg in segments]
+    avg_logprob_values = [float(getattr(seg, "avg_logprob", 0.0) or 0.0) for seg in segments]
+    compression_values = [float(getattr(seg, "compression_ratio", 0.0) or 0.0) for seg in segments]
+    max_no_speech = max(no_speech_values) if no_speech_values else 0.0
+    avg_logprob = sum(avg_logprob_values) / len(avg_logprob_values) if avg_logprob_values else 0.0
+    max_compression = max(compression_values) if compression_values else 0.0
+
+    level = "good"
+    reasons: list[str] = []
+    if max_no_speech >= 0.75:
+        level = "low"
+        reasons.append("high_no_speech_probability")
+    if avg_logprob <= -1.2:
+        level = "low"
+        reasons.append("low_average_logprob")
+    if max_compression >= 2.4:
+        level = "low"
+        reasons.append("high_compression_ratio")
+    if not reasons and (max_no_speech >= 0.55 or avg_logprob <= -0.85):
+        level = "watch"
+        reasons.append("borderline_asr_confidence")
+
+    return {
+        "level": level,
+        "reasons": reasons,
+        "no_speech_prob": round(max_no_speech, 3),
+        "avg_logprob": round(avg_logprob, 3),
+        "compression_ratio": round(max_compression, 3),
+    }
 
 
 @lru_cache(maxsize=1)

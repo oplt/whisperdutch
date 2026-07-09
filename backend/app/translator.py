@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,7 @@ class TranslationEngine:
         self.compute_type = os.getenv("TRANSLATION_COMPUTE_TYPE", "float16")
         self.beam_size = int(os.getenv("TRANSLATION_BEAM_SIZE", "1"))
         self.max_decoding_length = int(os.getenv("TRANSLATION_MAX_TOKENS", "160"))
-        self.cache: dict[str, str] = {}
+        self.cache: OrderedDict[str, str] = OrderedDict()
         self.max_cache_items = int(os.getenv("TRANSLATION_CACHE_ITEMS", "4096"))
 
         requested_device = os.getenv("TRANSLATION_DEVICE", "auto").strip().lower()
@@ -134,11 +135,59 @@ class TranslationEngine:
         logger.info("translation_warmup_completed")
 
     def translate(self, text: str) -> str:
+        translations = self.translate_many([text])
+        return translations[0] if translations else ""
+
+    def translate_many(self, texts: list[str]) -> list[str]:
+        normalized = [" ".join(text.strip().split()) for text in texts]
+        results: list[str | None] = []
+        uncached: list[str] = []
+        uncached_indexes: list[int] = []
+
+        for index, text in enumerate(normalized):
+            if not text:
+                results.append("")
+                continue
+            cached = self.cache.get(text)
+            if cached is not None:
+                self.cache.move_to_end(text)
+                logger.debug("translation_cache_hit chars=%s", len(text))
+                results.append(cached)
+                continue
+            results.append(None)
+            uncached.append(text)
+            uncached_indexes.append(index)
+
+        if uncached:
+            logger.debug("translation_batch_started engine=%s count=%s chars=%s", self.engine, len(uncached), sum(len(text) for text in uncached))
+            if self.engine == "ctranslate2":
+                translated = self._translate_ctranslate2_many(uncached)
+            else:
+                translated = self._translate_transformers_many(uncached)
+
+            for index, source_text, translated_text in zip(uncached_indexes, uncached, translated, strict=False):
+                self._cache_set(source_text, translated_text)
+                results[index] = translated_text
+            logger.debug("translation_batch_completed count=%s", len(uncached))
+
+        return [str(item or "") for item in results]
+
+    def _cache_set(self, text: str, translated: str) -> None:
+        if self.max_cache_items <= 0:
+            return
+        self.cache[text] = translated
+        self.cache.move_to_end(text)
+        while len(self.cache) > self.max_cache_items:
+            evicted, _ = self.cache.popitem(last=False)
+            logger.debug("translation_cache_evicted chars=%s", len(evicted))
+
+    def _translate_legacy(self, text: str) -> str:
         text = " ".join(text.strip().split())
         if not text:
             return ""
         cached = self.cache.get(text)
         if cached is not None:
+            self.cache.move_to_end(text)
             logger.debug("translation_cache_hit chars=%s", len(text))
             return cached
 
@@ -148,14 +197,35 @@ class TranslationEngine:
         else:
             translated = self._translate_transformers(text)
 
-        if len(self.cache) >= self.max_cache_items:
-            logger.info("translation_cache_cleared max_items=%s", self.max_cache_items)
-            self.cache.clear()
-        self.cache[text] = translated
+        self._cache_set(text, translated)
         logger.debug("translation_completed output_chars=%s", len(translated))
         return translated
 
     def _translate_ctranslate2(self, text: str) -> str:
+        translations = self._translate_ctranslate2_many([text])
+        return translations[0] if translations else ""
+
+    def _translate_ctranslate2_many(self, texts: list[str]) -> list[str]:
+        if not texts:
+            return []
+        source_batches = []
+        for text in texts:
+            input_ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=True, max_length=160)
+            source_batches.append(self.tokenizer.convert_ids_to_tokens(input_ids))
+        results = self.translator.translate_batch(
+            source_batches,
+            beam_size=self.beam_size,
+            max_decoding_length=self.max_decoding_length,
+            return_scores=False,
+        )
+        translations: list[str] = []
+        for result in results:
+            output_tokens = result.hypotheses[0]
+            output_ids = self.tokenizer.convert_tokens_to_ids(output_tokens)
+            translations.append(self.tokenizer.decode(output_ids, skip_special_tokens=True).strip())
+        return translations
+
+    def _translate_ctranslate2_old(self, text: str) -> str:
         input_ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=True, max_length=160)
         source_tokens = self.tokenizer.convert_ids_to_tokens(input_ids)
         results = self.translator.translate_batch(
@@ -169,10 +239,16 @@ class TranslationEngine:
         return self.tokenizer.decode(output_ids, skip_special_tokens=True).strip()
 
     def _translate_transformers(self, text: str) -> str:
+        translations = self._translate_transformers_many([text])
+        return translations[0] if translations else ""
+
+    def _translate_transformers_many(self, texts: list[str]) -> list[str]:
+        if not texts:
+            return []
         import torch
 
         with torch.inference_mode():
-            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=160).to(self.device)
+            inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=160).to(self.device)
             output_ids = self.model.generate(
                 **inputs,
                 max_new_tokens=self.max_decoding_length,
@@ -180,7 +256,7 @@ class TranslationEngine:
                 do_sample=False,
                 use_cache=True,
             )
-            return self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+            return [self.tokenizer.decode(row, skip_special_tokens=True).strip() for row in output_ids]
 
 
 @lru_cache(maxsize=1)

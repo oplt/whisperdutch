@@ -71,6 +71,30 @@ def _load_custom_glossary(path: Path) -> dict[str, str]:
     return rules
 
 
+def glossary_path() -> Path:
+    return Path(os.getenv("GLOSSARY_PATH", "config/glossary.tsv"))
+
+
+def list_glossary_rules() -> list[dict[str, str]]:
+    path = glossary_path()
+    return [{"pattern": pattern, "replacement": repl} for pattern, repl in _load_custom_glossary(path).items()]
+
+
+def save_glossary_rules(rules: list[tuple[str, str]]) -> None:
+    for pattern, _replacement in rules:
+        re.compile(pattern)
+
+    path = glossary_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Dutch subtitle glossary",
+        "# Format: regex<TAB>replacement",
+        *[f"{pattern}\t{replacement}" for pattern, replacement in rules],
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reload_text_processor()
+
+
 _processor: DutchTextProcessor | None = None
 
 
@@ -78,4 +102,10 @@ def get_text_processor() -> DutchTextProcessor:
     global _processor
     if _processor is None:
         _processor = DutchTextProcessor()
+    return _processor
+
+
+def reload_text_processor() -> DutchTextProcessor:
+    global _processor
+    _processor = DutchTextProcessor(glossary_enabled=True, custom_glossary_path=str(glossary_path()))
     return _processor

@@ -1,0 +1,14 @@
+# Tested lock for this project runtime.
+# Install with: python -m pip install -r backend/requirements.lock
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+numpy==2.4.5
+pydantic==2.13.4
+faster-whisper==1.2.1
+ctranslate2==4.7.1
+transformers==4.57.6
+sentencepiece==0.2.1
+sacremoses==0.1.1
+pytest==8.4.2
+ruff==0.14.9
+mypy==1.19.1

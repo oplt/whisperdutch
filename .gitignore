@@ -135,6 +135,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Generated runtime/model artifacts. Recreate with backend/scripts/prepare_translation_ct2.sh.
+backend/models/
+!backend/models/.gitkeep
+backend/logs/
+backend/backend.pid
+backend/config/glossary.tsv
+
 # C extensions
 *.so
 

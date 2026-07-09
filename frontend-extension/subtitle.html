@@ -24,17 +24,42 @@
         </label>
         <label>
           Translation
-          <select id="targetLang">
-            <option value="en" selected>English</option>
+          <select id="targetLang" title="Only English is available with the installed model">
+            <option value="en" selected>English (available)</option>
           </select>
         </label>
         <label>
           Mode
           <select id="qualityMode">
-            <option value="fast">Fast</option>
+            <option value="fast">Low latency</option>
             <option value="balanced" selected>Balanced</option>
-            <option value="quality">Quality</option>
+            <option value="quality">High accuracy</option>
           </select>
+        </label>
+        <label>
+          Display
+          <select id="displayMode">
+            <option value="current">Current only</option>
+            <option value="two-line">Two-line overlay</option>
+            <option value="history">History sidebar</option>
+            <option value="compact">Compact transcript</option>
+          </select>
+        </label>
+        <label>
+          Context hint
+          <input id="contextPrompt" maxlength="600" placeholder="names, topic, jargon" />
+        </label>
+        <label>
+          Monitor
+          <input id="monitorVolume" type="range" min="0" max="1" step="0.05" value="1" />
+        </label>
+        <label class="inline-check">
+          <input id="muteMonitor" type="checkbox" />
+          Mute
+        </label>
+        <label class="inline-check">
+          <input id="transcriptLogging" type="checkbox" />
+          Log text
         </label>
         <label>
           Dutch font
@@ -46,12 +71,29 @@
         </label>
         <button id="startBtn">Start capture</button>
         <button id="stopBtn" disabled>Stop</button>
+        <button id="exportTxtBtn" type="button">Export TXT</button>
+        <button id="exportVttBtn" type="button">Export VTT</button>
+        <button id="exportSrtBtn" type="button">Export SRT</button>
           <section class="status-grid">
             <div><strong>Status:</strong> <span id="status">Idle</span></div>
             <div><strong>Audio:</strong> <span id="audioStatus">Not capturing</span></div>
             <div><strong>Latency:</strong> <span id="latency">—</span></div>
+            <div><strong>Privacy:</strong> <span id="privacyStatus">Transcript text hidden in logs</span></div>
           </section>
         </div>
+
+        <details class="glossary-drawer">
+          <summary class="glossary-title">
+            <span>Glossary</span>
+            <span class="history-summary-right">session corrections</span>
+          </summary>
+          <div class="glossary-grid">
+            <input id="glossaryPattern" placeholder="Dutch regex" />
+            <input id="glossaryReplacement" placeholder="Replacement" />
+            <button id="addGlossaryBtn" type="button">Add</button>
+          </div>
+          <div id="glossaryList" class="glossary-list"></div>
+        </details>
 
       </div>
 
@@ -62,6 +104,7 @@
     <section class="subtitle-panel">
       <div class="header-row">
         <span>Current subtitle</span>
+        <span id="qualityBadge" class="quality-badge good">Quality: waiting</span>
       </div>
 
       <article id="currentSubtitle" class="current-subtitle empty">
@@ -83,6 +126,10 @@
     </section>
   </main>
 
+  <script src="audio-client.js"></script>
+  <script src="backend-client.js"></script>
+  <script src="subtitle-renderer.js"></script>
+  <script src="settings.js"></script>
   <script src="subtitle.js"></script>
 </body>
 </html>

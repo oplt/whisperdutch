@@ -73,6 +73,7 @@ class SentenceAssembler:
 
     _buffer: str = ""
     _recent: deque[str] = field(default_factory=lambda: deque(maxlen=8))
+    session_prompt: str = ""
 
     def add_fragment(self, fragment: str, force: bool = False) -> tuple[list[str], str]:
         processor = get_text_processor()
@@ -117,7 +118,7 @@ class SentenceAssembler:
         We still append a short window of recent finalized Dutch text to help
         Whisper keep continuity across audio chunks.
         """
-        static_prompt = os.getenv("ASR_INITIAL_PROMPT", "").strip()
+        static_prompt = " ".join([os.getenv("ASR_INITIAL_PROMPT", "").strip(), self.session_prompt.strip()]).strip()
         dynamic = " ".join([*self._recent, self._buffer]).strip()
         prompt = " ".join(part for part in [static_prompt, dynamic[-self.context_chars:]] if part).strip()
         return prompt or None

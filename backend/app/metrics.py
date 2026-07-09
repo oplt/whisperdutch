@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+import statistics
+import time
+from collections import OrderedDict
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+
+@dataclass
+class SessionMetrics:
+    client_id: str
+    started_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    closed_at: float | None = None
+    mode: str = "fast"
+    audio_chunks: int = 0
+    finalized_segments: int = 0
+    partial_segments: int = 0
+    dropped_segments: int = 0
+    merged_segments: int = 0
+    translations_started: int = 0
+    translations_cancelled: int = 0
+    max_queue_depth: int = 0
+    reconnects: int = 0
+    audio_seconds: list[float] = field(default_factory=list)
+    asr_latency_ms: list[int] = field(default_factory=list)
+    mt_latency_ms: list[int] = field(default_factory=list)
+    total_latency_ms: list[int] = field(default_factory=list)
+    realtime_factors: list[float] = field(default_factory=list)
+
+    def touch(self) -> None:
+        self.updated_at = time.time()
+
+    def snapshot(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["summary"] = {
+            "audio_seconds_total": round(sum(self.audio_seconds), 3),
+            "asr_latency_ms": _summary(self.asr_latency_ms),
+            "mt_latency_ms": _summary(self.mt_latency_ms),
+            "total_latency_ms": _summary(self.total_latency_ms),
+            "realtime_factor": _summary(self.realtime_factors),
+        }
+        return data
+
+
+class SessionMetricsStore:
+    def __init__(self, max_sessions: int = 50) -> None:
+        self.max_sessions = max_sessions
+        self._sessions: OrderedDict[str, SessionMetrics] = OrderedDict()
+
+    def create(self, client_id: str) -> SessionMetrics:
+        metrics = SessionMetrics(client_id=client_id)
+        self._sessions[client_id] = metrics
+        self._sessions.move_to_end(client_id)
+        while len(self._sessions) > self.max_sessions:
+            self._sessions.popitem(last=False)
+        return metrics
+
+    def get(self, client_id: str) -> dict[str, Any] | None:
+        metrics = self._sessions.get(client_id)
+        if not metrics:
+            return None
+        self._sessions.move_to_end(client_id)
+        return metrics.snapshot()
+
+    def recent(self) -> list[dict[str, Any]]:
+        return [metrics.snapshot() for metrics in reversed(self._sessions.values())]
+
+
+def _summary(values: list[int] | list[float]) -> dict[str, float | int | None]:
+    if not values:
+        return {"count": 0, "p50": None, "p95": None, "max": None}
+    sorted_values = sorted(values)
+    return {
+        "count": len(values),
+        "p50": round(float(statistics.median(sorted_values)), 3),
+        "p95": round(float(_percentile(sorted_values, 0.95)), 3),
+        "max": round(float(max(sorted_values)), 3),
+    }
+
+
+def _percentile(values: list[int] | list[float], percentile: float) -> float:
+    if len(values) == 1:
+        return float(values[0])
+    index = (len(values) - 1) * percentile
+    lower = int(index)
+    upper = min(lower + 1, len(values) - 1)
+    weight = index - lower
+    return float(values[lower]) * (1 - weight) + float(values[upper]) * weight
+
+
+session_metrics_store = SessionMetricsStore()

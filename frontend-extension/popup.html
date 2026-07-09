@@ -9,8 +9,16 @@
 <body class="popup-body">
 <main class="popup-card">
   <h1>Dutch Subtitles</h1>
+  <section id="setupPanel" class="setup-panel">
+    <div id="setupNative" class="setup-row">Native host</div>
+    <div id="setupBackend" class="setup-row">Backend process</div>
+    <div id="setupModels" class="setup-row">Models ready</div>
+    <div id="setupPermissions" class="setup-row">Tab permission</div>
+  </section>
   <div class="button-group">
     <button id="startBackendBtn">Start backend</button>
+    <button id="restartBackendBtn">Restart backend</button>
+    <button id="stopBackendBtn">Stop backend</button>
     <button id="openWindowBtn">Open subtitle window</button>
   </div>
   <p id="status" class="muted"></p>

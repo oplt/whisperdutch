@@ -1,0 +1,24 @@
+.PHONY: local-dev install-backend prepare-models check
+
+PROCFILE ?= Procfile
+
+local-dev:
+	@if command -v honcho >/dev/null 2>&1; then \
+		honcho start -f $(PROCFILE); \
+	elif command -v foreman >/dev/null 2>&1; then \
+		foreman start -f $(PROCFILE); \
+	elif command -v overmind >/dev/null 2>&1; then \
+		overmind start -f $(PROCFILE); \
+	else \
+		echo "No Procfile runner found; running backend process directly from $(PROCFILE)."; \
+		sh -c "$$(sed -n 's/^backend: //p' $(PROCFILE))"; \
+	fi
+
+install-backend:
+	cd backend && python -m venv .venv && . .venv/bin/activate && pip install -r requirements.lock
+
+prepare-models:
+	cd backend && . .venv/bin/activate && bash scripts/prepare_translation_ct2.sh
+
+check:
+	bash scripts/check.sh
