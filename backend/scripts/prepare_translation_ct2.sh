@@ -14,7 +14,7 @@ MODEL_NAME="${MODEL_NAME:-Helsinki-NLP/opus-mt-nl-en}"
 OUTPUT_DIR="${OUTPUT_DIR:-models/opus-mt-nl-en-ct2}"
 QUANTIZATION="${QUANTIZATION:-int8}"
 
-python -m pip install -U "ctranslate2>=4.6.0" "transformers>=4.44,<5" sentencepiece sacremoses huggingface-hub
+python -m pip install "ctranslate2>=4.6.0" "transformers>=4.44,<5" sentencepiece sacremoses huggingface-hub
 
 ct2-transformers-converter \
   --model "$MODEL_NAME" \

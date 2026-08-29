@@ -102,9 +102,7 @@ def setup_logging() -> Path:
 
     _CURRENT_LOG_FILE = Path(file_handler.baseFilename)
     _CONFIGURED = True
-    logging.getLogger("dutch_subtitles.logging").info(
-        "logging_initialized file=%s level=%s", _CURRENT_LOG_FILE, level_name
-    )
+    logging.getLogger("dutch_subtitles.logging").info("logging_initialized file=%s level=%s", _CURRENT_LOG_FILE, level_name)
     return _CURRENT_LOG_FILE
 
 

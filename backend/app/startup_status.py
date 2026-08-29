@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 STATUS_PATH = Path("logs/startup-status.json")
 
 

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from app.schemas import ClientConfigMessage
 from app.ws_session import ConfigIgnored, _parse_config
+from pydantic import ValidationError
 
 
 def test_client_config_validates_and_normalizes_context() -> None:

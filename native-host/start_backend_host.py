@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import signal
@@ -9,8 +10,10 @@ import struct
 import subprocess
 import sys
 import time
-from datetime import date
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 HOST_NAME = "com.polatozgur111.dutch_subtitle_backend"
@@ -22,9 +25,13 @@ LOG_DIR = BACKEND_DIR / "logs"
 
 def native_log_file() -> Path:
     return LOG_DIR / f"native-host-{date.today().isoformat()}.log"
+
+
 PID_FILE = BACKEND_DIR / "backend.pid"
+LOCK_FILE = LOG_DIR / "native-host.lock"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+SUPPORTED_ASR_DEVICES = {"cpu", "cuda"}
 
 
 def backend_urls(port: int, host: str = DEFAULT_HOST) -> dict[str, str | int]:
@@ -46,8 +53,15 @@ def read_message() -> dict:
     if len(raw_length) != 4:
         raise RuntimeError("Invalid native message length header")
     message_length = struct.unpack("@I", raw_length)[0]
-    message = sys.stdin.buffer.read(message_length).decode("utf-8")
-    return json.loads(message)
+    if message_length > 1024 * 1024:
+        raise RuntimeError("Native message exceeds the 1 MiB limit")
+    message = sys.stdin.buffer.read(message_length)
+    if len(message) != message_length:
+        raise RuntimeError("Incomplete native message")
+    payload = json.loads(message.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("Native message must be a JSON object")
+    return payload
 
 
 def send_message(payload: dict) -> None:
@@ -71,7 +85,7 @@ def is_backend_healthy(port: int = DEFAULT_PORT, timeout: float = 0.6) -> bool:
             if response.status != 200:
                 return False
             data = json.loads(response.read().decode("utf-8"))
-            return bool(data.get("ok"))
+            return bool(data.get("ok")) and data.get("service") == "dutch-live-subtitle-translator"
     except Exception:
         return False
 
@@ -86,15 +100,56 @@ def pid_is_running(pid: int) -> bool:
         return False
 
 
-def existing_pid() -> int | None:
+def pid_belongs_to_backend(pid: int) -> bool:
+    proc = Path("/proc") / str(pid)
     try:
-        pid = int(PID_FILE.read_text().strip())
-    except Exception:
+        cwd = (proc / "cwd").resolve()
+        command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return cwd == BACKEND_DIR.resolve() and ("uvicorn" in command or str(RUN_SCRIPT) in command)
+
+
+def read_pid_record() -> tuple[int, int] | None:
+    try:
+        raw = PID_FILE.read_text().strip()
+        if raw.startswith("{"):
+            record = json.loads(raw)
+            return int(record["pid"]), int(record.get("port") or DEFAULT_PORT)
+        return int(raw), DEFAULT_PORT
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
-    if pid_is_running(pid):
+
+
+def existing_pid() -> int | None:
+    record = read_pid_record()
+    if record is None:
+        return None
+    pid, _port = record
+    if pid_is_running(pid) and pid_belongs_to_backend(pid):
         return pid
     cleanup_stale_pid()
     return None
+
+
+def existing_port() -> int:
+    record = read_pid_record()
+    return record[1] if record else DEFAULT_PORT
+
+
+def write_pid_record(pid: int, port: int) -> None:
+    PID_FILE.write_text(json.dumps({"pid": pid, "port": port}, separators=(",", ":")))
+
+
+@contextmanager
+def lifecycle_lock() -> Iterator[None]:
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_FILE.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def cleanup_stale_pid() -> None:
@@ -117,9 +172,16 @@ def requested_port(message: dict | None = None) -> int:
         raw = message.get("port")
     raw = raw or os.getenv("DUTCH_SUBTITLE_BACKEND_PORT") or os.getenv("BACKEND_PORT") or str(DEFAULT_PORT)
     try:
-        return int(raw)
+        port = int(raw)
     except (TypeError, ValueError):
         return DEFAULT_PORT
+    return port if 1024 <= port <= 65535 else DEFAULT_PORT
+
+
+def requested_asr_device(message: dict | None = None) -> str:
+    raw = message.get("asr_device") if message else None
+    device = str(raw or os.getenv("ASR_DEVICE") or "cpu").strip().lower()
+    return device if device in SUPPORTED_ASR_DEVICES else "cpu"
 
 
 def start_backend(message: dict | None = None) -> dict:
@@ -128,13 +190,20 @@ def start_backend(message: dict | None = None) -> dict:
         if is_backend_healthy(port):
             return {"ok": True, "status": "already_running", "message": "Backend is already running.", **backend_urls(port)}
 
+    pid = existing_pid()
+    if pid:
+        port = existing_port()
+        return {
+            "ok": True,
+            "status": "already_starting",
+            "pid": pid,
+            "message": "Backend process is already starting.",
+            **backend_urls(port),
+        }
+
     port = preferred_port
     if is_port_open(DEFAULT_HOST, port):
         port = find_available_port(preferred_port + 1)
-
-    pid = existing_pid()
-    if pid and is_port_open(DEFAULT_HOST, port):
-        return {"ok": True, "status": "already_starting", "pid": pid, "message": "Backend process is already starting.", **backend_urls(port)}
 
     if not RUN_SCRIPT.exists():
         return {"ok": False, "error": f"Cannot find {RUN_SCRIPT}"}
@@ -145,9 +214,12 @@ def start_backend(message: dict | None = None) -> dict:
     log.write(f"\n\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting backend via native host\n".encode())
 
     env = os.environ.copy()
-    env.setdefault("ASR_DEVICE", "cuda")
+    asr_device = requested_asr_device(message)
+    env["ASR_DEVICE_OVERRIDE"] = asr_device
+    env["ASR_COMPUTE_TYPE_OVERRIDE"] = "float16" if asr_device == "cuda" else "int8"
+    env["ASR_DEVICE"] = asr_device
     env.setdefault("ASR_MODEL", "small")
-    env.setdefault("ASR_COMPUTE_TYPE", "float16")
+    env["ASR_COMPUTE_TYPE"] = env["ASR_COMPUTE_TYPE_OVERRIDE"]
     env.setdefault("TRANSLATION_DEVICE", "cpu")
     env.setdefault("BACKEND_LOG_DIR", "logs")
     env.setdefault("BACKEND_LOG_PREFIX", "backend")
@@ -156,17 +228,20 @@ def start_backend(message: dict | None = None) -> dict:
     env["BACKEND_PORT"] = str(port)
     env.setdefault("BACKEND_HOST", DEFAULT_HOST)
 
-    process = subprocess.Popen(
-        ["bash", str(RUN_SCRIPT)],
-        cwd=str(BACKEND_DIR),
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        env=env,
-        start_new_session=True,
-        close_fds=True,
-    )
-    PID_FILE.write_text(str(process.pid))
+    try:
+        process = subprocess.Popen(
+            ["bash", str(RUN_SCRIPT)],
+            cwd=str(BACKEND_DIR),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+            close_fds=True,
+        )
+    finally:
+        log.close()
+    write_pid_record(process.pid, port)
     for _attempt in range(30):
         time.sleep(0.5)
         if is_backend_healthy(port, timeout=0.4):
@@ -243,14 +318,16 @@ def main() -> None:
     try:
         message = read_message()
         command = message.get("command")
-        if command == "start_backend":
-            send_message(start_backend(message))
-        elif command == "stop_backend":
-            send_message(stop_backend())
-        elif command == "restart_backend":
-            send_message(restart_backend(message))
-        else:
-            send_message({"ok": False, "error": f"Unsupported command: {command}"})
+        with lifecycle_lock():
+            if command == "start_backend":
+                response = start_backend(message)
+            elif command == "stop_backend":
+                response = stop_backend()
+            elif command == "restart_backend":
+                response = restart_backend(message)
+            else:
+                response = {"ok": False, "error": f"Unsupported command: {command}"}
+        send_message(response)
     except Exception as exc:
         send_message({"ok": False, "error": str(exc)})
 

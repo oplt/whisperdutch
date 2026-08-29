@@ -23,7 +23,15 @@ test("monitor settings persist", () => {
   assert.deepEqual(settings.getMonitor(storage), { volume: "0.5", muted: true });
 });
 
-test("display mode falls back to current", () => {
-  assert.equal(settings.getDisplayMode(memoryStorage({ subtitleDisplayMode: "floating" })), "current");
+test("display mode falls back to history", () => {
+  assert.equal(settings.getDisplayMode(memoryStorage({ subtitleDisplayMode: "floating" })), "history");
   assert.equal(settings.getDisplayMode(memoryStorage({ subtitleDisplayMode: "history" })), "history");
+});
+
+test("ASR device falls back to CPU and persists valid choices", () => {
+  const storage = memoryStorage({ subtitleAsrDevice: "unknown" });
+  assert.equal(settings.getDevice(storage), "cpu");
+  assert.equal(settings.setDevice(storage, "cuda"), "cuda");
+  assert.equal(settings.getDevice(storage), "cuda");
+  assert.equal(settings.setDevice(storage, "invalid"), "cpu");
 });

@@ -17,6 +17,18 @@ def test_sentence_assembler_waits_on_connector() -> None:
     assert buffer == "Ik kom morgen en"
 
 
+def test_sentence_assembler_accumulates_max_duration_fragments() -> None:
+    assembler = SentenceAssembler(min_final_words=2)
+
+    first_sentences, first_buffer = assembler.add_fragment("Dit is een", force=False)
+    second_sentences, second_buffer = assembler.add_fragment("lange zin.", force=False)
+
+    assert first_sentences == []
+    assert first_buffer == "Dit is een"
+    assert second_sentences == ["Dit is een lange zin."]
+    assert second_buffer == ""
+
+
 def test_context_prompt_includes_session_hint() -> None:
     assembler = SentenceAssembler()
     assembler.session_prompt = "Ajax Champions League"

@@ -1,14 +1,15 @@
 const TARGET_SAMPLE_RATE = 16000;
-const CLIENT_LOG_ENDPOINT = BackendClient.ENDPOINTS.clientLogs;
-const BACKEND_LOGS_ENDPOINT = BackendClient.ENDPOINTS.backendLogs;
-const GLOSSARY_ENDPOINT = BackendClient.ENDPOINTS.glossary;
-const WS_BUFFER_WARN_BYTES = 512 * 1024;
-const WS_BUFFER_DROP_BYTES = 2 * 1024 * 1024;
+const WS_BUFFER_WARN_BYTES = 32 * 1024;
+const WS_BUFFER_DROP_BYTES = 128 * 1024;
+const MAX_RENDERED_SUBTITLES = 500;
+const NATIVE_HOST = "com.polatozgur111.dutch_subtitle_backend";
 
 const params = new URLSearchParams(location.search);
 const tabId = Number(params.get("tabId"));
+const autoStartRequested = params.get("autostart") === "1";
 
 const backendUrlEl = document.getElementById("backendUrl");
+const asrDeviceEls = Array.from(document.querySelectorAll('input[name="asrDevice"]'));
 const targetLangEl = document.getElementById("targetLang");
 const qualityModeEl = document.getElementById("qualityMode");
 const displayModeEl = document.getElementById("displayMode");
@@ -20,26 +21,61 @@ const dutchFontSizeEl = document.getElementById("dutchFontSize");
 const translationFontSizeEl = document.getElementById("translationFontSize");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
-const exportTxtBtn = document.getElementById("exportTxtBtn");
-const exportVttBtn = document.getElementById("exportVttBtn");
-const exportSrtBtn = document.getElementById("exportSrtBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+const reconnectBtn = document.getElementById("reconnectBtn");
+const audioSourceEl = document.getElementById("audioSource");
+const inputLevelBarEl = document.getElementById("inputLevelBar");
 const statusEl = document.getElementById("status");
 const audioStatusEl = document.getElementById("audioStatus");
 const latencyEl = document.getElementById("latency");
+const asrLatencyEl = document.getElementById("asrLatency");
+const translationLatencyEl = document.getElementById("translationLatency");
+const connectedBadgeEl = document.getElementById("connectedBadge");
+const capturingBadgeEl = document.getElementById("capturingBadge");
 const privacyStatusEl = document.getElementById("privacyStatus");
 const qualityBadgeEl = document.getElementById("qualityBadge");
 const currentSubtitleEl = document.getElementById("currentSubtitle");
 const historySubtitlesEl = document.getElementById("historySubtitles");
-const historyDrawerEl = document.getElementById("historyDrawer");
-const historyCountEl = document.getElementById("historyCount");
-const topPanelEl = document.getElementById("topPanel");
-const topPanelActionEl = document.getElementById("topPanelAction");
+const subtitleFeedEl = document.getElementById("subtitleFeed");
+const subtitlesTabEl = document.getElementById("subtitlesTab");
+const settingsTabEl = document.getElementById("settingsTab");
+const subtitlesPanelEl = document.getElementById("subtitlesPanel");
+const settingsPanelEl = document.getElementById("settingsPanel");
 const frontendLogsEl = document.getElementById("frontendLogs");
 const refreshLogsBtn = document.getElementById("refreshLogsBtn");
+const openGlossaryBtn = document.getElementById("openGlossaryBtn");
+const glossaryDialogEl = document.getElementById("glossaryDialog");
+const glossarySearchEl = document.getElementById("glossarySearch");
 const glossaryPatternEl = document.getElementById("glossaryPattern");
 const glossaryReplacementEl = document.getElementById("glossaryReplacement");
 const addGlossaryBtn = document.getElementById("addGlossaryBtn");
 const glossaryListEl = document.getElementById("glossaryList");
+const retryStatusEl = document.getElementById("retryStatus");
+const sessionNameEl = document.getElementById("sessionName");
+const sessionSelectEl = document.getElementById("sessionSelect");
+const newSessionBtn = document.getElementById("newSessionBtn");
+const renameSessionBtn = document.getElementById("renameSessionBtn");
+const saveSessionBtn = document.getElementById("saveSessionBtn");
+const restoreSessionBtn = document.getElementById("restoreSessionBtn");
+const clearSessionBtn = document.getElementById("clearSessionBtn");
+const exportTxtBtn = document.getElementById("exportTxtBtn");
+const exportVttBtn = document.getElementById("exportVttBtn");
+const exportSrtBtn = document.getElementById("exportSrtBtn");
+const retainTranscriptEl = document.getElementById("retainTranscript");
+const autoDeleteMinutesEl = document.getElementById("autoDeleteMinutes");
+const backendToolbarEl = document.getElementById("backendToolbar");
+const backendServiceLabelEl = document.getElementById("backendServiceLabel");
+const backendServiceDetailEl = document.getElementById("backendServiceDetail");
+const refreshBackendStatusBtn = document.getElementById("refreshBackendStatusBtn");
+const restartBackendBtn = document.getElementById("restartBackendBtn");
+const stopBackendBtn = document.getElementById("stopBackendBtn");
+const diagnosticNativeEl = document.getElementById("diagnosticNative");
+const diagnosticBackendEl = document.getElementById("diagnosticBackend");
+const diagnosticModelsEl = document.getElementById("diagnosticModels");
+const diagnosticTabAudioEl = document.getElementById("diagnosticTabAudio");
+const backendDiagnosticMessageEl = document.getElementById("backendDiagnosticMessage");
+const openBackendLogsBtn = document.getElementById("openBackendLogsBtn");
+const diagnosticLogsDrawerEl = document.getElementById("diagnosticLogsDrawer");
 
 let ws = null;
 let mediaStream = null;
@@ -49,19 +85,37 @@ let workletNode = null;
 let monitorGain = null;
 let startedAt = null;
 let currentSubtitleItem = null;
-let historyCount = 0;
 let stablePartialText = "";
 let droppedAudioChunks = 0;
 let lastBackpressureWarningAt = 0;
 let transcriptItems = [];
+let transcriptById = new Map();
 let glossaryRules = [];
 let manualStopRequested = false;
 let reconnecting = false;
 let reconnectAttempts = 0;
+let reconnectTimer = null;
+let stopPromise = null;
+let flushResolver = null;
+let inputLevelFrame = null;
+let pendingInputLevel = 0;
 let configDebounceTimer = null;
+let transcriptionPaused = false;
+let currentSessionId = `session-${Date.now()}`;
+let autoDeleteTimer = null;
+let connectionRecoveryPromise = null;
+let pendingSubtitleQueue = [];
+let backendActionInProgress = false;
+let nativeHostStatus = "Not checked";
 
-startBtn.addEventListener("click", startCapture);
+startBtn.addEventListener("click", startTranslation);
 stopBtn.addEventListener("click", stopCapture);
+if (pauseBtn) pauseBtn.addEventListener("click", togglePause);
+if (reconnectBtn) reconnectBtn.addEventListener("click", reconnectBackend);
+if (audioSourceEl) audioSourceEl.addEventListener("change", () => {
+  audioSourceEl.value = "tab";
+  setStatus("Only current tab audio is available without backend or extension changes.", true);
+});
 qualityModeEl.addEventListener("change", sendConfigIfOpen);
 displayModeEl.addEventListener("change", () => applyDisplayMode(displayModeEl.value, true));
 targetLangEl.addEventListener("change", sendConfigIfOpen);
@@ -81,28 +135,61 @@ muteMonitorEl.addEventListener("change", () => {
 transcriptLoggingEl.addEventListener("change", updatePrivacy);
 dutchFontSizeEl.addEventListener("input", () => updateFontSizes(true));
 translationFontSizeEl.addEventListener("input", () => updateFontSizes(true));
-exportTxtBtn.addEventListener("click", () => exportTranscript("txt"));
-exportVttBtn.addEventListener("click", () => exportTranscript("vtt"));
-exportSrtBtn.addEventListener("click", () => exportTranscript("srt"));
 if (addGlossaryBtn) addGlossaryBtn.addEventListener("click", addGlossaryRule);
+if (openGlossaryBtn) openGlossaryBtn.addEventListener("click", openGlossaryDialog);
+if (glossarySearchEl) glossarySearchEl.addEventListener("input", renderGlossary);
+if (newSessionBtn) newSessionBtn.addEventListener("click", newSession);
+if (renameSessionBtn) renameSessionBtn.addEventListener("click", renameSession);
+if (saveSessionBtn) saveSessionBtn.addEventListener("click", saveCurrentSession);
+if (restoreSessionBtn) restoreSessionBtn.addEventListener("click", restoreSelectedSession);
+if (clearSessionBtn) clearSessionBtn.addEventListener("click", clearSessionTranscript);
+if (exportTxtBtn) exportTxtBtn.addEventListener("click", () => exportTranscript("txt"));
+if (exportVttBtn) exportVttBtn.addEventListener("click", () => exportTranscript("vtt"));
+if (exportSrtBtn) exportSrtBtn.addEventListener("click", () => exportTranscript("srt"));
+if (retainTranscriptEl) retainTranscriptEl.addEventListener("change", updateRetentionPreference);
+if (autoDeleteMinutesEl) autoDeleteMinutesEl.addEventListener("input", updateRetentionPreference);
 window.addEventListener("keydown", handleShortcut);
-window.addEventListener("beforeunload", stopCapture);
-if (historyDrawerEl) historyDrawerEl.addEventListener("toggle", updateHistorySummary);
-if (topPanelEl) topPanelEl.addEventListener("toggle", updateTopPanelSummary);
+window.addEventListener("beforeunload", () => {
+  void stopCapture({ graceful: false, updateStatus: false });
+});
+if (subtitlesTabEl) subtitlesTabEl.addEventListener("click", () => setActiveTab("subtitles"));
+if (settingsTabEl) settingsTabEl.addEventListener("click", () => setActiveTab("settings"));
+[subtitlesTabEl, settingsTabEl].filter(Boolean).forEach((tab) => tab.addEventListener("keydown", handleTabKeydown));
 if (refreshLogsBtn) refreshLogsBtn.addEventListener("click", refreshBackendLogs);
+if (refreshBackendStatusBtn) refreshBackendStatusBtn.addEventListener("click", () => refreshBackendStatus({ clearError: true }));
+if (restartBackendBtn) restartBackendBtn.addEventListener("click", restartBackendService);
+if (stopBackendBtn) stopBackendBtn.addEventListener("click", stopBackendService);
+if (openBackendLogsBtn) openBackendLogsBtn.addEventListener("click", openBackendLogs);
+backendUrlEl.addEventListener("change", () => {
+  const connection = BackendClient.setWsUrl(backendUrlEl.value.trim(), { source: "manual" });
+  if (!connection) {
+    backendUrlEl.value = BackendClient.getWsUrl();
+    setStatus("Invalid WebSocket URL. Using the saved backend connection.", true);
+  }
+});
+asrDeviceEls.forEach((input) => input.addEventListener("change", () => {
+  const device = Settings.setDevice(localStorage, input.value);
+  const label = device === "cuda" ? "GPU" : "CPU";
+  setStatus(`${label} selected. Restart the backend to apply it.`);
+  logClient("info", "asr_device_preference_changed", { device });
+}));
 
-logClient("info", "subtitle_window_loaded", { tabId });
+logClient("info", "subtitle_window_loaded", { tabId, autoStartRequested });
 backendUrlEl.value = BackendClient.getWsUrl();
 updateFontSizes(false);
 loadModePreference();
+loadDevicePreference();
 loadDisplayModePreference();
 loadContextPreference();
 loadMonitorPreference();
-loadTopPanelPreference();
-updateHistorySummary();
-updateTopPanelSummary(false);
-refreshGlossary();
-refreshPrivacy();
+loadHistoryPreference();
+loadSessionPreference();
+loadTabPreference();
+setAudioStatus("Not capturing");
+updateConnectionBadge("Idle", "idle");
+updateLatencyBadges();
+updateRetryStatus("Ready", "idle");
+initializeSubtitleWindow();
 
 function logClient(level, message, context = {}) {
   const record = {
@@ -124,6 +211,305 @@ function logClient(level, message, context = {}) {
   } catch (_err) {}
 
   BackendClient.postClientLog(record).catch(() => {});
+}
+
+function rememberBackendResponse(response) {
+  if (!response || (!response.base_url && !response.ws_url)) return;
+  const baseUrl = response.base_url || BackendClient.baseUrlFromWs(response.ws_url);
+  BackendClient.setConnectionUrls(baseUrl, response.ws_url, "native");
+  backendUrlEl.value = BackendClient.getWsUrl();
+}
+
+function renderBackendService({ state, label, detail, backend, models, error = "" }) {
+  if (backendToolbarEl) backendToolbarEl.dataset.state = state;
+  if (backendServiceLabelEl) backendServiceLabelEl.textContent = label;
+  if (backendServiceDetailEl) backendServiceDetailEl.textContent = detail;
+  if (diagnosticNativeEl) diagnosticNativeEl.textContent = nativeHostStatus;
+  if (diagnosticBackendEl) diagnosticBackendEl.textContent = backend;
+  if (diagnosticModelsEl) diagnosticModelsEl.textContent = models;
+  if (diagnosticTabAudioEl) diagnosticTabAudioEl.textContent = Number.isInteger(tabId) && tabId > 0
+    ? "Selected tab available"
+    : "No source tab";
+  if (backendDiagnosticMessageEl) {
+    backendDiagnosticMessageEl.textContent = error;
+    backendDiagnosticMessageEl.hidden = !error;
+  }
+
+  const backendLive = state === "ready" || state === "starting";
+  if (!backendActionInProgress) {
+    if (restartBackendBtn) restartBackendBtn.disabled = false;
+    if (stopBackendBtn) stopBackendBtn.disabled = !backendLive;
+    if (refreshBackendStatusBtn) refreshBackendStatusBtn.disabled = false;
+  }
+}
+
+function setBackendActionInProgress(inProgress) {
+  backendActionInProgress = inProgress;
+  if (restartBackendBtn) restartBackendBtn.disabled = inProgress;
+  if (stopBackendBtn) {
+    const state = backendToolbarEl?.dataset.state;
+    stopBackendBtn.disabled = inProgress || (state !== "ready" && state !== "starting");
+  }
+  if (refreshBackendStatusBtn) refreshBackendStatusBtn.disabled = inProgress;
+  if (inProgress) startBtn.disabled = true;
+  else if (!mediaStream && (!ws || ws.readyState !== WebSocket.OPEN)) startBtn.disabled = false;
+}
+
+function sendNativeMessage(payload) {
+  return new Promise((resolve, reject) => {
+    logClient("info", "native_message_send", payload);
+    chrome.runtime.sendNativeMessage(NATIVE_HOST, payload, response => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        nativeHostStatus = "Connection failed";
+        reject(new Error(error.message));
+        return;
+      }
+      nativeHostStatus = response?.ok ? "Available" : "Connection failed";
+      logClient("info", "native_message_response", response || {});
+      resolve(response);
+    });
+  });
+}
+
+async function checkBackendReady() {
+  try {
+    const response = await fetch(BackendClient.url("/health/ready"), { cache: "no-store" });
+    if (!response.ok) return false;
+    const data = await response.json();
+    return Boolean(data?.ready && data?.model_ready);
+  } catch (_err) {
+    return false;
+  }
+}
+
+async function waitForBackend(maxAttempts = 45) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (await checkBackendReady()) return true;
+    renderBackendService({
+      state: "starting",
+      label: "Preparing models",
+      detail: `Loading the local translation service (${attempt}s)`,
+      backend: "Running",
+      models: "Loading"
+    });
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  return false;
+}
+
+async function backendDiagnosticMessage() {
+  try {
+    const response = await fetch(BackendClient.url("/debug/device"), { cache: "no-store" });
+    if (!response.ok) return "Backend diagnostics are unavailable.";
+    const data = await response.json();
+    const readiness = data?.readiness;
+    const error = readiness?.last_error || readiness?.startup_status?.error;
+    if (error?.message) return error.message;
+    if (readiness?.startup_status?.phase) return `Backend phase: ${readiness.startup_status.phase}`;
+  } catch (_err) {}
+  return "The backend models did not become ready.";
+}
+
+async function ensureBackendReady({ restart = false } = {}) {
+  renderBackendService({
+    state: "starting",
+    label: restart ? "Restarting backend" : "Connecting",
+    detail: restart ? "Restarting the local translation service" : "Checking the local backend and translation models",
+    backend: restart ? "Restarting" : "Checking...",
+    models: "Checking..."
+  });
+
+  let connection = restart ? null : await reconcileBackendConnection();
+  if (!restart && connection) {
+    const ready = await checkBackendReady() || await waitForBackend();
+    if (!ready) throw new Error(await backendDiagnosticMessage());
+    renderBackendService({
+      state: "ready",
+      label: "Ready",
+      detail: "Backend and translation models are available",
+      backend: "Available",
+      models: "Available"
+    });
+    return connection;
+  }
+
+  const response = await sendNativeMessage({
+    command: restart ? "restart_backend" : "start_backend",
+    asr_device: Settings.getDevice(localStorage)
+  });
+  rememberBackendResponse(response);
+  if (!response?.ok) throw new Error(response?.error || "The local translation service could not be started.");
+  if (!await waitForBackend()) throw new Error(await backendDiagnosticMessage());
+
+  connection = await reconcileBackendConnection();
+  renderBackendService({
+    state: "ready",
+    label: "Ready",
+    detail: "Backend and translation models are available",
+    backend: "Available",
+    models: "Available"
+  });
+  return connection || {
+    baseUrl: BackendClient.getBaseUrl(),
+    wsUrl: BackendClient.getWsUrl(),
+    source: "native"
+  };
+}
+
+async function refreshBackendStatus({ clearError = false } = {}) {
+  if (backendActionInProgress) return null;
+  if (clearError && backendDiagnosticMessageEl) {
+    backendDiagnosticMessageEl.textContent = "";
+    backendDiagnosticMessageEl.hidden = true;
+  }
+
+  renderBackendService({
+    state: "starting",
+    label: "Checking",
+    detail: "Checking the local backend and translation models",
+    backend: "Checking...",
+    models: "Checking..."
+  });
+
+  const connection = await reconcileBackendConnection();
+  if (!connection) {
+    renderBackendService({
+      state: "stopped",
+      label: "Stopped",
+      detail: "Start capture to launch the local translation service",
+      backend: "Not running",
+      models: "Unavailable"
+    });
+    return null;
+  }
+
+  const ready = await checkBackendReady();
+  renderBackendService({
+    state: ready ? "ready" : "starting",
+    label: ready ? "Ready" : "Preparing models",
+    detail: ready ? "Backend and translation models are available" : "The backend is running while models load",
+    backend: "Available",
+    models: ready ? "Available" : "Loading"
+  });
+  return connection;
+}
+
+async function startTranslation() {
+  if (backendActionInProgress || mediaStream || (ws && ws.readyState === WebSocket.OPEN)) return;
+  setBackendActionInProgress(true);
+  setStatus("Preparing translation service...");
+  try {
+    await ensureBackendReady();
+    await startCapture();
+  } catch (error) {
+    const message = error?.message || String(error);
+    renderBackendService({
+      state: "error",
+      label: "Connection error",
+      detail: "The local translation service could not be started",
+      backend: "Unavailable",
+      models: "Unavailable",
+      error: message
+    });
+    setStatus(message, true);
+    logClient("error", "translation_start_failed", { error: message });
+  } finally {
+    setBackendActionInProgress(false);
+  }
+}
+
+async function restartBackendService() {
+  if (backendActionInProgress) return;
+  const resumeCapture = Boolean(mediaStream || (ws && ws.readyState === WebSocket.OPEN));
+  setBackendActionInProgress(true);
+  try {
+    if (resumeCapture) await stopCapture();
+    await ensureBackendReady({ restart: true });
+    if (resumeCapture) await startCapture();
+  } catch (error) {
+    const message = error?.message || String(error);
+    renderBackendService({
+      state: "error",
+      label: "Restart failed",
+      detail: "The local translation service could not be restarted",
+      backend: "Unavailable",
+      models: "Unavailable",
+      error: message
+    });
+    setStatus(message, true);
+    logClient("error", "backend_restart_failed", { error: message });
+  } finally {
+    setBackendActionInProgress(false);
+  }
+}
+
+async function stopBackendService() {
+  if (backendActionInProgress) return;
+  setBackendActionInProgress(true);
+  try {
+    if (mediaStream || ws) await stopCapture();
+    renderBackendService({
+      state: "starting",
+      label: "Stopping",
+      detail: "Stopping the local translation service",
+      backend: "Stopping",
+      models: "Unavailable"
+    });
+    const response = await sendNativeMessage({ command: "stop_backend" });
+    if (!response?.ok) throw new Error(response?.error || "The local translation service could not be stopped.");
+    renderBackendService({
+      state: "stopped",
+      label: "Stopped",
+      detail: "Start capture to launch the local translation service",
+      backend: "Not running",
+      models: "Unavailable"
+    });
+  } catch (error) {
+    const message = error?.message || String(error);
+    renderBackendService({
+      state: "error",
+      label: "Stop failed",
+      detail: "The local translation service could not be stopped",
+      backend: "Unknown",
+      models: "Unknown",
+      error: message
+    });
+    setStatus(message, true);
+    logClient("error", "backend_stop_failed", { error: message });
+  } finally {
+    setBackendActionInProgress(false);
+  }
+}
+
+async function openBackendLogs() {
+  setActiveTab("settings", true);
+  if (diagnosticLogsDrawerEl) diagnosticLogsDrawerEl.open = true;
+  await refreshBackendLogs();
+  diagnosticLogsDrawerEl?.scrollIntoView({ block: "nearest" });
+}
+
+async function initializeSubtitleWindow() {
+  if (!Number.isInteger(tabId) || tabId <= 0) {
+    renderBackendService({
+      state: "error",
+      label: "No source tab",
+      detail: "Click the extension icon from the tab whose audio you want to translate",
+      backend: "Not checked",
+      models: "Not checked",
+      error: "A browser tab was not selected for audio capture."
+    });
+    setStatus("Missing tab id. Reopen the extension from a video tab.", true);
+    return;
+  }
+
+  if (autoStartRequested) {
+    setActiveTab("subtitles");
+    await startTranslation();
+  } else {
+    await refreshBackendStatus();
+  }
+  await Promise.all([refreshGlossary(), refreshPrivacy()]);
 }
 
 async function refreshBackendLogs(event) {
@@ -151,58 +537,98 @@ async function startCapture() {
 
   startBtn.disabled = true;
   stopBtn.disabled = false;
+  if (pauseBtn) pauseBtn.disabled = false;
+  transcriptionPaused = false;
+  updatePauseButton();
   manualStopRequested = false;
   reconnectAttempts = 0;
   clearSubtitles();
-  latencyEl.textContent = "—";
+  updateLatencyBadges();
   startedAt = Date.now();
 
   try {
+    const connection = await reconcileBackendConnection();
+    const websocketUrl = connection?.wsUrl || backendUrlEl.value.trim() || BackendClient.getWsUrl();
+    const savedConnection = BackendClient.setWsUrl(websocketUrl, { source: "manual" });
+    if (!savedConnection) throw new Error("Invalid WebSocket backend URL.");
+    backendUrlEl.value = savedConnection.wsUrl;
     setStatus("Connecting to backend...");
-    logClient("info", "connecting_websocket", { url: backendUrlEl.value.trim() });
-    ws = await connectWebSocket(backendUrlEl.value.trim());
+    logClient("info", "connecting_websocket", { url: savedConnection.wsUrl });
+    ws = await connectWebSocket(savedConnection.wsUrl);
     sendConfigIfOpen();
 
     setStatus("Requesting tab audio permission...");
+    if (diagnosticTabAudioEl) diagnosticTabAudioEl.textContent = "Requesting access...";
     mediaStream = await captureTabAudio(tabId);
+    if (diagnosticTabAudioEl) diagnosticTabAudioEl.textContent = "Granted";
     logClient("info", "tab_audio_capture_ready", { tracks: mediaStream.getTracks().length });
 
     setStatus("Starting audio pipeline...");
     await startAudioPipeline(mediaStream);
 
-    audioStatusEl.textContent = "Capturing tab audio";
+    setAudioStatus("Capturing tab audio");
     setStatus("Running");
+    setActiveTab("subtitles");
     logClient("info", "capture_running", { sampleRate: TARGET_SAMPLE_RATE });
   } catch (err) {
-    logClient("error", "start_capture_failed", { error: err?.message || String(err) });
-    setStatus(err?.message || String(err), true);
-    await stopCapture();
+    const message = err?.message || String(err);
+    if (diagnosticTabAudioEl) diagnosticTabAudioEl.textContent = "Unavailable";
+    logClient("error", "start_capture_failed", { error: message });
+    await stopCapture({ graceful: false, updateStatus: false });
+    throw new Error(message, { cause: err });
   }
 }
 
-async function stopCapture() {
+async function stopCapture(options = {}) {
+  if (stopPromise) return stopPromise;
+  stopPromise = performStopCapture(options).finally(() => {
+    stopPromise = null;
+  });
+  return stopPromise;
+}
+
+async function performStopCapture({ graceful = true, updateStatus = true } = {}) {
   logClient("info", "stop_capture_requested");
   manualStopRequested = true;
   reconnecting = false;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
   startBtn.disabled = false;
   stopBtn.disabled = true;
-  audioStatusEl.textContent = "Not capturing";
+  if (pauseBtn) pauseBtn.disabled = true;
+  transcriptionPaused = false;
+  updatePauseButton();
+  setAudioStatus("Not capturing");
+  updateInputLevel(0);
 
-  try {
-    if (workletNode) {
-      workletNode.port.onmessage = null;
-      workletNode.disconnect();
-    }
-    if (mediaSource) mediaSource.disconnect();
-    if (monitorGain) monitorGain.disconnect();
-    if (audioContext) await audioContext.close();
-    if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try { ws.send(JSON.stringify({ type: "flush" })); } catch (_err) {}
-      ws.close();
-    }
-  } catch (_err) {
-    // Ignore shutdown errors.
+  const socket = ws;
+  const context = audioContext;
+  safeCleanup(() => {
+    if (workletNode) workletNode.port.onmessage = null;
+  });
+  safeCleanup(() => workletNode?.disconnect());
+  safeCleanup(() => mediaSource?.disconnect());
+  safeCleanup(() => monitorGain?.disconnect());
+  safeCleanup(() => mediaStream?.getTracks().forEach(track => track.stop()));
+  if (inputLevelFrame !== null) cancelAnimationFrame(inputLevelFrame);
+  inputLevelFrame = null;
+  pendingInputLevel = 0;
+  if (inputLevelBarEl) {
+    inputLevelBarEl.style.width = "0%";
+    inputLevelBarEl.style.backgroundColor = "var(--accent)";
+  }
+
+  if (graceful && socket?.readyState === WebSocket.OPEN) {
+    const flushed = waitForBackendFlush(8000);
+    safeCleanup(() => socket.send(JSON.stringify({ type: "flush" })));
+    await flushed;
+  }
+  if (ws === socket) ws = null;
+  safeCleanup(() => socket?.close());
+  if (context && context.state !== "closed") {
+    await context.close().catch(error => logClient("warn", "audio_context_close_failed", {
+      error: error?.message || String(error)
+    }));
   }
 
   ws = null;
@@ -212,8 +638,61 @@ async function stopCapture() {
   workletNode = null;
   monitorGain = null;
 
-  setStatus("Stopped");
+  if (updateStatus) setStatus("Stopped");
+  updateRetryStatus("Ready", "idle");
   logClient("info", "capture_stopped");
+}
+
+function safeCleanup(action) {
+  try {
+    action();
+  } catch (error) {
+    logClient("warn", "capture_cleanup_failed", { error: error?.message || String(error) });
+  }
+}
+
+function waitForBackendFlush(timeoutMs) {
+  return new Promise(resolve => {
+    const timeout = setTimeout(() => {
+      flushResolver = null;
+      resolve(false);
+    }, timeoutMs);
+    flushResolver = () => {
+      clearTimeout(timeout);
+      flushResolver = null;
+      resolve(true);
+    };
+  });
+}
+
+function togglePause() {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !workletNode) {
+    setStatus("Start capture before pausing.", true);
+    return;
+  }
+  transcriptionPaused = !transcriptionPaused;
+  updatePauseButton();
+  setAudioStatus(transcriptionPaused ? "Paused, WebSocket kept open" : "Capturing tab audio");
+  setStatus(transcriptionPaused ? "Paused" : "Running");
+}
+
+function updatePauseButton() {
+  if (!pauseBtn) return;
+  pauseBtn.textContent = transcriptionPaused ? "Resume" : "Pause";
+}
+
+function reconnectBackend() {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !mediaStream) {
+    setStatus("Start capture to connect.", true);
+    return;
+  }
+  setStatus("Reconnecting to backend...");
+  try {
+    ws.close();
+  } catch (err) {
+    logClient("warn", "manual_reconnect_failed", { error: err?.message || String(err) });
+    setStatus(err?.message || String(err), true);
+  }
 }
 
 function sendConfigIfOpen() {
@@ -235,27 +714,51 @@ function connectWebSocket(url) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url);
     socket.binaryType = "arraybuffer";
+    let settled = false;
+
+    const fail = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      safeCleanup(() => socket.close());
+      reject(error);
+    };
 
     const timeout = setTimeout(() => {
-      reject(new Error("Backend connection timeout. Is FastAPI running on 127.0.0.1:8000?"));
+      fail(new Error("Backend connection timeout. Check the local subtitle service."));
     }, 5000);
 
     socket.onopen = () => {
+      if (settled) {
+        safeCleanup(() => socket.close());
+        return;
+      }
+      settled = true;
       clearTimeout(timeout);
       logClient("info", "websocket_open", { url });
+      updateRetryStatus("Connected", "good");
       resolve(socket);
     };
 
     socket.onerror = () => {
-      clearTimeout(timeout);
       logClient("error", "websocket_error", { url });
-      reject(new Error("Could not connect to backend WebSocket."));
+      updateRetryStatus("WebSocket error", "bad");
+      fail(new Error("Could not connect to backend WebSocket."));
     };
 
     socket.onclose = () => {
+      clearTimeout(timeout);
       logClient("warn", "websocket_closed");
-      if (ws === socket) setStatus("Backend connection closed", true);
-      scheduleReconnect(socket);
+      if (!settled) {
+        settled = true;
+        reject(new Error("Backend WebSocket closed before connecting."));
+      }
+      if (ws === socket) ws = null;
+      if (!manualStopRequested) {
+        setStatus("Backend connection closed", true);
+        updateRetryStatus("Closed, retry pending", "warn");
+        scheduleReconnect();
+      }
     };
 
     socket.onmessage = event => {
@@ -270,6 +773,10 @@ function connectWebSocket(url) {
 }
 
 function handleBackendMessage(payload) {
+  if (payload.type === "flushed") {
+    flushResolver?.();
+    return;
+  }
   if (payload.type === "ready") {
     logClient("info", "backend_ready", { clientId: payload.client_id });
     setStatus("Backend ready");
@@ -299,14 +806,20 @@ function handleBackendMessage(payload) {
       return;
     }
     if (payload.dutch) {
-      const candidate = stabilizePartial(stablePartialText, payload.dutch);
+      const candidate = SubtitleRenderer.stabilizePartial(stablePartialText, payload.dutch);
       if (candidate !== stablePartialText) {
         stablePartialText = candidate;
-        renderPartialSubtitle(stablePartialText, payload.latency_ms);
+        if (!currentSubtitleItem?.pending) {
+          if (currentSubtitleItem) {
+            moveCurrentToHistory(currentSubtitleItem);
+            currentSubtitleItem = null;
+          }
+          renderPartialSubtitle(stablePartialText, payload.latency_ms);
+        }
         updateQualityBadge(payload.quality, true);
       }
       if (typeof payload.latency_ms === "number") {
-        latencyEl.textContent = `${payload.latency_ms} ms partial ASR`;
+          updateLatencyBadges({ asr: payload.latency_ms });
       }
     }
     return;
@@ -314,26 +827,24 @@ function handleBackendMessage(payload) {
 
   if (payload.type === "final_pending") {
     if (!payload.dutch) return;
-    logClient("info", "final_pending_received", { id: payload.id, asrLatencyMs: payload.asr_latency_ms, audioSeconds: payload.audio_seconds });
     stablePartialText = "";
     showFinalPending(payload);
     updateQualityBadge(payload.quality, false);
     if (typeof payload.latency_ms === "number") {
-      latencyEl.textContent = `${payload.latency_ms} ms ASR · translating…`;
+      updateLatencyBadges({ asr: payload.latency_ms });
     }
     return;
   }
 
   if (payload.type === "final") {
     if (!payload.dutch) return;
-    logClient("info", "final_translation_received", { id: payload.id, asrLatencyMs: payload.asr_latency_ms, translationLatencyMs: payload.translation_latency_ms, totalLatencyMs: payload.latency_ms });
     stablePartialText = "";
     updateFinalTranslation(payload);
     updateQualityBadge(payload.quality, false);
     if (typeof payload.latency_ms === "number") {
       const asr = typeof payload.asr_latency_ms === "number" ? payload.asr_latency_ms : 0;
       const mt = typeof payload.translation_latency_ms === "number" ? payload.translation_latency_ms : 0;
-      latencyEl.textContent = `${payload.latency_ms} ms model time · ASR ${asr} ms · MT ${mt} ms`;
+      updateLatencyBadges({ total: payload.latency_ms, asr, translation: mt });
     }
   }
 }
@@ -389,7 +900,9 @@ async function startAudioPipeline(stream) {
   monitorGain.connect(audioContext.destination);
 
   workletNode.port.onmessage = event => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const pcm16 = event.data?.pcm || event.data;
+    updateInputLevel(Number(event.data?.level) || 0);
+    if (transcriptionPaused || !ws || ws.readyState !== WebSocket.OPEN) return;
     if (ws.bufferedAmount > WS_BUFFER_DROP_BYTES) {
       droppedAudioChunks += 1;
       maybeReportBackpressure("drop", ws.bufferedAmount);
@@ -398,9 +911,20 @@ async function startAudioPipeline(stream) {
     if (ws.bufferedAmount > WS_BUFFER_WARN_BYTES) {
       maybeReportBackpressure("warn", ws.bufferedAmount);
     }
-    const pcm16 = event.data;
     if (pcm16?.byteLength > 0) ws.send(pcm16);
   };
+}
+
+function updateInputLevel(level) {
+  if (!inputLevelBarEl) return;
+  pendingInputLevel = level;
+  if (inputLevelFrame !== null) return;
+  inputLevelFrame = requestAnimationFrame(() => {
+    inputLevelFrame = null;
+    const pct = Math.round(Math.max(0, Math.min(1, pendingInputLevel)) * 100);
+    inputLevelBarEl.style.width = `${pct}%`;
+    inputLevelBarEl.style.backgroundColor = pct > 82 ? "var(--warning)" : "var(--accent)";
+  });
 }
 
 function updateMonitorGain() {
@@ -414,9 +938,9 @@ function maybeReportBackpressure(action, bufferedAmount) {
   if (now - lastBackpressureWarningAt < 1500) return;
   lastBackpressureWarningAt = now;
   const bufferedKb = Math.round(bufferedAmount / 1024);
-  audioStatusEl.textContent = action === "drop"
+  setAudioStatus(action === "drop"
     ? `Backend overloaded, dropping audio (${droppedAudioChunks})`
-    : `Backend catching up (${bufferedKb} KB queued)`;
+    : `Backend catching up (${bufferedKb} KB queued)`);
   logClient(action === "drop" ? "warn" : "info", "websocket_backpressure", {
     action,
     bufferedAmount,
@@ -424,7 +948,7 @@ function maybeReportBackpressure(action, bufferedAmount) {
   });
 }
 
-function renderPartialSubtitle(dutch, latencyMs) {
+function renderPartialSubtitle(dutch) {
   currentSubtitleEl.classList.remove("empty");
   currentSubtitleEl.classList.add("partial");
   currentSubtitleEl.innerHTML = "";
@@ -435,173 +959,152 @@ function renderPartialSubtitle(dutch, latencyMs) {
 
   const translationCell = document.createElement("div");
   translationCell.className = "subtitle-cell translation pending";
-  translationCell.textContent = currentSubtitleItem?.translation || "translation appears after the sentence is final";
-
-  const meta = document.createElement("div");
-  meta.className = "row-meta";
-  meta.textContent = latencyMs ? `live partial · ${latencyMs} ms` : "live partial";
+  translationCell.textContent = currentSubtitleItem?.translation || "Translation pending...";
 
   currentSubtitleEl.appendChild(dutchCell);
   currentSubtitleEl.appendChild(translationCell);
-  currentSubtitleEl.appendChild(meta);
+  if (subtitleFeedEl) subtitleFeedEl.scrollTop = 0;
 }
 
 function showFinalPending(payload) {
-  if (currentSubtitleItem) {
-    moveCurrentToHistory();
-  }
-
   const elapsed = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
-  recordPendingTranscript(payload, elapsed);
-  currentSubtitleItem = {
+  const transcriptItem = recordPendingTranscript(payload, elapsed);
+  const displayItem = {
     id: payload.id || `local-${Date.now()}`,
     dutch: payload.dutch,
-    translation: "Translating…",
+    translation: "Translating...",
     pending: true,
-    meta: `+${elapsed}s · ${payload.asr_latency_ms || payload.latency_ms || 0} ms ASR · ${payload.mode || qualityModeEl.value}`,
-    detail: payload.asr_fragment ? `ASR fragment: ${payload.asr_fragment}` : "",
+    startMs: transcriptItem.startMs,
+    endMs: transcriptItem.endMs,
     quality: payload.quality
   };
+  if (currentSubtitleItem?.pending) {
+    pendingSubtitleQueue.push(displayItem);
+    return;
+  }
+
+  if (currentSubtitleItem) {
+    moveCurrentToHistory(currentSubtitleItem);
+    currentSubtitleItem = null;
+  }
+
+  if (pendingSubtitleQueue.length) {
+    pendingSubtitleQueue.push(displayItem);
+    advancePendingSubtitleQueue();
+    return;
+  }
+
+  currentSubtitleItem = displayItem;
   renderCurrentSubtitle(currentSubtitleItem);
 }
 
 function updateFinalTranslation(payload) {
   const id = payload.id;
-  const translation = payload.translation || "";
+  const translation = payload.translation || "Translation unavailable";
   const elapsed = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
-  const meta = payload.latency_ms
-    ? `+${elapsed}s · ${payload.latency_ms} ms · ${payload.mode || qualityModeEl.value}`
-    : `+${elapsed}s`;
   recordFinalTranscript(payload, elapsed);
 
   if (currentSubtitleItem && (!id || currentSubtitleItem.id === id)) {
     currentSubtitleItem = {
       ...currentSubtitleItem,
       dutch: payload.dutch || currentSubtitleItem.dutch,
-      translation: translation || currentSubtitleItem.translation,
+      translation,
       pending: false,
-      meta,
-      detail: payload.asr_fragment ? `ASR fragment: ${payload.asr_fragment}` : currentSubtitleItem.detail
-      ,quality: payload.quality || currentSubtitleItem.quality
+      quality: payload.quality || currentSubtitleItem.quality
     };
     renderCurrentSubtitle(currentSubtitleItem);
-    return;
-  }
-
-  const historyRow = id ? historySubtitlesEl.querySelector(`[data-subtitle-id="${CSS.escape(id)}"]`) : null;
-  if (historyRow) {
-    const translationCell = historyRow.querySelector(".subtitle-cell.translation");
-    const metaCell = historyRow.querySelector(".row-meta");
-    if (translationCell) {
-      translationCell.textContent = translation || "Translation unavailable";
-      translationCell.classList.remove("pending");
+    if (pendingSubtitleQueue.length) {
+      const completedItem = currentSubtitleItem;
+      currentSubtitleItem = null;
+      moveCurrentToHistory(completedItem);
+      advancePendingSubtitleQueue();
     }
-    if (metaCell) metaCell.textContent = meta;
     return;
   }
 
-  // Fallback for out-of-order events where the pending message was never seen.
-  showFinalPending({ ...payload, translation: "" });
-  if (currentSubtitleItem) {
-    currentSubtitleItem.translation = translation || "Translation unavailable";
-    currentSubtitleItem.pending = false;
-    currentSubtitleItem.meta = meta;
-    renderCurrentSubtitle(currentSubtitleItem);
+  const queuedItem = id ? pendingSubtitleQueue.find(item => item.id === id) : null;
+  if (queuedItem) {
+    queuedItem.dutch = payload.dutch || queuedItem.dutch;
+    queuedItem.translation = translation;
+    queuedItem.pending = false;
+    queuedItem.quality = payload.quality || queuedItem.quality;
+    recordFinalTranscript({ ...payload, translation }, elapsed);
+    if (!currentSubtitleItem) advancePendingSubtitleQueue();
+    return;
   }
+
+  // Fallback for an out-of-order final where the pending message was never seen.
+  const fallback = {
+    id: id || `local-${Date.now()}`,
+    dutch: payload.dutch || "",
+    translation,
+    pending: false,
+    startMs: startedAt ? Date.now() - startedAt : elapsed * 1000,
+    endMs: (startedAt ? Date.now() - startedAt : elapsed * 1000) + 3500,
+    quality: payload.quality
+  };
+  pendingSubtitleQueue.push(fallback);
+  advancePendingSubtitleQueue();
 }
 
-function moveCurrentToHistory() {
-  if (!currentSubtitleItem) return;
-  historySubtitlesEl.prepend(createHistoryRow(currentSubtitleItem));
-  historySubtitlesEl.scrollTop = 0;
-  historyCount += 1;
-  updateHistorySummary();
+function moveCurrentToHistory(item = currentSubtitleItem) {
+  if (!item || item.pending) return;
+  const existingRow = item.id
+    ? historySubtitlesEl.querySelector(`[data-subtitle-id="${CSS.escape(item.id)}"]`)
+    : null;
+  const historyRow = createHistoryRow(item);
+  if (existingRow) existingRow.replaceWith(historyRow);
+  else historySubtitlesEl.prepend(historyRow);
+  while (historySubtitlesEl.childElementCount > MAX_RENDERED_SUBTITLES) {
+    historySubtitlesEl.lastElementChild?.remove();
+  }
+  if (subtitleFeedEl) subtitleFeedEl.scrollTop = 0;
+}
+
+function clearCurrentSubtitle() {
+  delete currentSubtitleEl.dataset.subtitleId;
+  currentSubtitleEl.className = "current-subtitle empty";
+  currentSubtitleEl.innerHTML = '<div class="placeholder">Waiting for Dutch speech...</div>';
+}
+
+function advancePendingSubtitleQueue() {
+  if (currentSubtitleItem) return;
+  while (pendingSubtitleQueue.length) {
+    const next = pendingSubtitleQueue.shift();
+    if (!next) continue;
+    currentSubtitleItem = next;
+    renderCurrentSubtitle(next);
+    return;
+  }
+  clearCurrentSubtitle();
 }
 
 function renderCurrentSubtitle(item) {
   currentSubtitleEl.classList.remove("empty", "partial");
   currentSubtitleEl.innerHTML = "";
   if (item.id) currentSubtitleEl.dataset.subtitleId = item.id;
-
-  const dutchCell = document.createElement("div");
-  dutchCell.className = "subtitle-cell dutch";
-  dutchCell.textContent = item.dutch;
-
-  const translationCell = document.createElement("div");
-  translationCell.className = item.pending ? "subtitle-cell translation pending" : "subtitle-cell translation";
-  translationCell.textContent = item.translation;
-
-  const meta = document.createElement("div");
-  meta.className = "row-meta";
-  meta.textContent = item.meta;
-  const quality = createQualityPill(item.quality);
-
-  currentSubtitleEl.appendChild(dutchCell);
-  currentSubtitleEl.appendChild(translationCell);
-  if (quality) currentSubtitleEl.appendChild(quality);
-  currentSubtitleEl.appendChild(meta);
+  currentSubtitleEl.appendChild(SubtitleUI.createSubtitleCard(item));
+  if (subtitleFeedEl) subtitleFeedEl.scrollTop = 0;
 }
 
 function createHistoryRow(item) {
   const row = document.createElement("article");
   row.className = "subtitle-row";
+  row.tabIndex = -1;
   if (item.id) row.dataset.subtitleId = item.id;
-
-  const dutchCell = document.createElement("div");
-  dutchCell.className = "subtitle-cell dutch";
-  dutchCell.textContent = item.dutch;
-
-  const translationCell = document.createElement("div");
-  translationCell.className = item.pending ? "subtitle-cell translation pending" : "subtitle-cell translation";
-  translationCell.textContent = item.translation;
-
-  const meta = document.createElement("div");
-  meta.className = "row-meta";
-  meta.textContent = item.meta;
-  const quality = createQualityPill(item.quality);
-
-  row.appendChild(dutchCell);
-  row.appendChild(translationCell);
-  if (quality) row.appendChild(quality);
-  row.appendChild(meta);
+  row.appendChild(SubtitleUI.createSubtitleCard(item));
   return row;
 }
 
 function clearSubtitles() {
   currentSubtitleItem = null;
-  historyCount = 0;
+  pendingSubtitleQueue = [];
   stablePartialText = "";
   transcriptItems = [];
-  delete currentSubtitleEl.dataset.subtitleId;
-  currentSubtitleEl.className = "current-subtitle empty";
-  currentSubtitleEl.innerHTML = '<div class="placeholder">Waiting for Dutch speech…</div>';
+  transcriptById.clear();
+  clearCurrentSubtitle();
   updateQualityBadge(null, false);
   historySubtitlesEl.innerHTML = "";
-  if (historyDrawerEl) historyDrawerEl.open = false;
-  updateHistorySummary();
-}
-
-function stabilizePartial(previous, next) {
-  return SubtitleRenderer.stabilizePartial(previous, next);
-}
-
-function mergeByWordOverlap(left, right) {
-  return SubtitleRenderer.mergeByWordOverlap(left, right);
-}
-
-function normalizeText(text) {
-  return SubtitleRenderer.normalizeText(text);
-}
-
-function updateHistorySummary() {
-  if (!historyCountEl) return;
-  const label = historyCount === 1 ? "1 previous subtitle" : `${historyCount} previous subtitles`;
-  historyCountEl.textContent = label;
-
-  const action = document.querySelector(".history-action");
-  if (action && historyDrawerEl) {
-    action.textContent = historyDrawerEl.open ? "click to close" : "click to open";
-  }
 }
 
 function updateFontSizes(shouldPersist) {
@@ -630,23 +1133,52 @@ function updateFontSizes(shouldPersist) {
 }
 
 
-function loadTopPanelPreference() {
-  if (!topPanelEl) return;
-  const saved = localStorage.getItem("subtitleTopPanelOpen");
-  if (saved === "0") topPanelEl.open = false;
-  if (saved === "1") topPanelEl.open = true;
+function setActiveTab(tabName, focus = false) {
+  const settingsActive = tabName === "settings";
+  const tabState = [
+    [subtitlesTabEl, !settingsActive],
+    [settingsTabEl, settingsActive]
+  ];
+  tabState.forEach(([tab, active]) => {
+    if (!tab) return;
+    tab.classList.toggle("is-active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  if (subtitlesPanelEl) subtitlesPanelEl.hidden = settingsActive;
+  if (settingsPanelEl) settingsPanelEl.hidden = !settingsActive;
+  localStorage.setItem("subtitleActiveTab", settingsActive ? "settings" : "subtitles");
+  if (focus) (settingsActive ? settingsTabEl : subtitlesTabEl)?.focus();
 }
 
-function updateTopPanelSummary(shouldPersist = true) {
-  if (!topPanelEl || !topPanelActionEl) return;
-  topPanelActionEl.textContent = topPanelEl.open ? "click to collapse" : "click to expand";
-  if (shouldPersist) {
-    localStorage.setItem("subtitleTopPanelOpen", topPanelEl.open ? "1" : "0");
-  }
+function loadTabPreference() {
+  const saved = localStorage.getItem("subtitleActiveTab");
+  setActiveTab(saved === "settings" ? "settings" : "subtitles");
+}
+
+function handleTabKeydown(event) {
+  const tabs = [subtitlesTabEl, settingsTabEl].filter(Boolean);
+  const currentIndex = tabs.indexOf(event.currentTarget);
+  if (currentIndex < 0) return;
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (currentIndex + 1) % tabs.length;
+  if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = tabs.length - 1;
+  if (nextIndex === currentIndex) return;
+  event.preventDefault();
+  setActiveTab(tabs[nextIndex] === settingsTabEl ? "settings" : "subtitles", true);
 }
 
 function loadModePreference() {
   qualityModeEl.value = Settings.getMode(localStorage);
+}
+
+function loadDevicePreference() {
+  const device = Settings.getDevice(localStorage);
+  asrDeviceEls.forEach((input) => {
+    input.checked = input.value === device;
+  });
 }
 
 function loadDisplayModePreference() {
@@ -664,6 +1196,18 @@ function loadMonitorPreference() {
   muteMonitorEl.checked = monitor.muted;
 }
 
+function loadHistoryPreference() {
+  if (retainTranscriptEl) retainTranscriptEl.checked = localStorage.getItem("subtitleRetainTranscript") !== "0";
+  if (autoDeleteMinutesEl) autoDeleteMinutesEl.value = localStorage.getItem("subtitleAutoDeleteMinutes") || "0";
+  scheduleAutoDelete();
+}
+
+function loadSessionPreference() {
+  const savedName = localStorage.getItem("subtitleCurrentSessionName");
+  if (sessionNameEl) sessionNameEl.value = savedName || "Untitled session";
+  renderSessionSelect();
+}
+
 function clampFontSize(value, min, max, fallback) {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(min, Math.min(max, Math.round(value)));
@@ -672,17 +1216,130 @@ function clampFontSize(value, min, max, fallback) {
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.className = isError ? "error" : "";
+  if (isError) updateConnectionBadge("Error", "bad");
+  else if (message === "Running" || message === "Backend ready" || message === "Reconnected") updateConnectionBadge("Connected", "good");
+  else if (message === "Stopped" || message === "Idle") updateConnectionBadge("Idle", "idle");
+  else if (message.toLowerCase().includes("connect") || message.toLowerCase().includes("backend")) updateConnectionBadge(message, "warn");
 }
 
 function applyDisplayMode(mode, shouldPersist) {
   const safeMode = ["current", "two-line", "history", "compact"].includes(mode) ? mode : "current";
   document.body.classList.remove("display-current", "display-two-line", "display-history", "display-compact");
   document.body.classList.add(`display-${safeMode}`);
-  if (safeMode === "history" || safeMode === "compact") {
-    historyDrawerEl.open = true;
-  }
   if (shouldPersist) localStorage.setItem("subtitleDisplayMode", safeMode);
-  updateHistorySummary(false);
+}
+
+function renderHistoryFromTranscript() {
+  historySubtitlesEl.innerHTML = "";
+  transcriptItems
+    .filter(item => (item.dutch || item.translation) && !item.pending)
+    .slice(-MAX_RENDERED_SUBTITLES)
+    .reverse()
+    .forEach(item => historySubtitlesEl.appendChild(createHistoryRow(item)));
+}
+
+function sessionStore() {
+  try {
+    return JSON.parse(localStorage.getItem("subtitleSavedSessions") || "{}");
+  } catch (_err) {
+    return {};
+  }
+}
+
+function writeSessionStore(store) {
+  localStorage.setItem("subtitleSavedSessions", JSON.stringify(store));
+}
+
+function currentSessionSnapshot() {
+  return {
+    id: currentSessionId,
+    name: sessionNameEl?.value.trim() || "Untitled session",
+    savedAt: new Date().toISOString(),
+    transcriptItems
+  };
+}
+
+function renderSessionSelect() {
+  if (!sessionSelectEl) return;
+  const store = sessionStore();
+  sessionSelectEl.innerHTML = "";
+  Object.values(store)
+    .sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)))
+    .forEach(session => {
+      const option = document.createElement("option");
+      option.value = session.id;
+      option.textContent = `${session.name || "Untitled session"} (${new Date(session.savedAt).toLocaleString()})`;
+      sessionSelectEl.appendChild(option);
+    });
+}
+
+function saveCurrentSession() {
+  const store = sessionStore();
+  const snapshot = currentSessionSnapshot();
+  store[snapshot.id] = snapshot;
+  writeSessionStore(store);
+  renderSessionSelect();
+  if (sessionSelectEl) sessionSelectEl.value = snapshot.id;
+  setStatus("Session saved locally");
+}
+
+function newSession() {
+  currentSessionId = `session-${Date.now()}`;
+  if (sessionNameEl) sessionNameEl.value = "Untitled session";
+  clearSessionTranscript();
+  setStatus("New local session");
+}
+
+function renameSession() {
+  localStorage.setItem("subtitleCurrentSessionName", sessionNameEl?.value.trim() || "Untitled session");
+  saveCurrentSession();
+  setStatus("Session renamed locally");
+}
+
+function restoreSelectedSession() {
+  if (!sessionSelectEl?.value) {
+    setStatus("No saved session selected.", true);
+    return;
+  }
+  const session = sessionStore()[sessionSelectEl.value];
+  if (!session) {
+    setStatus("Saved session not found.", true);
+    return;
+  }
+  currentSessionId = session.id;
+  if (sessionNameEl) sessionNameEl.value = session.name || "Untitled session";
+  transcriptItems = Array.isArray(session.transcriptItems) ? session.transcriptItems : [];
+  rebuildTranscriptIndex();
+  currentSubtitleItem = null;
+  currentSubtitleEl.className = "current-subtitle empty";
+  currentSubtitleEl.innerHTML = '<div class="placeholder">Session restored. Start capture for live subtitles.</div>';
+  renderHistoryFromTranscript();
+  setStatus("Session restored locally");
+}
+
+function clearSessionTranscript() {
+  clearSubtitles();
+  transcriptItems = [];
+  transcriptById.clear();
+  renderHistoryFromTranscript();
+  setStatus("Local transcript cleared");
+}
+
+function updateRetentionPreference() {
+  if (retainTranscriptEl) localStorage.setItem("subtitleRetainTranscript", retainTranscriptEl.checked ? "1" : "0");
+  if (autoDeleteMinutesEl) localStorage.setItem("subtitleAutoDeleteMinutes", autoDeleteMinutesEl.value || "0");
+  if (retainTranscriptEl && !retainTranscriptEl.checked) clearSessionTranscript();
+  scheduleAutoDelete();
+}
+
+function scheduleAutoDelete() {
+  if (autoDeleteTimer) clearTimeout(autoDeleteTimer);
+  const minutes = Number(autoDeleteMinutesEl?.value || "0");
+  if (!Number.isFinite(minutes) || minutes <= 0) return;
+  autoDeleteTimer = setTimeout(() => {
+    clearSessionTranscript();
+    setStatus("Local transcript auto-deleted");
+  }, minutes * 60 * 1000);
 }
 
 async function refreshPrivacy() {
@@ -709,8 +1366,9 @@ async function updatePrivacy() {
 }
 
 function updatePrivacyLabel(logTranscriptText) {
-  privacyStatusEl.textContent = logTranscriptText ? "Transcript text stored in logs" : "Transcript text hidden in logs";
+  privacyStatusEl.textContent = logTranscriptText ? "Logs text" : "Logs hidden";
   privacyStatusEl.className = logTranscriptText ? "privacy-on" : "";
+  SubtitleUI.setBadgeState(privacyStatusEl.closest(".status-badge"), logTranscriptText ? "warn" : "good");
 }
 
 function updateQualityBadge(quality, isPartial) {
@@ -729,20 +1387,11 @@ function qualityLabel(quality, isPartial) {
   return `${prefix}: good`;
 }
 
-function createQualityPill(quality) {
-  if (!quality || !quality.level || quality.level === "good") return null;
-  const pill = document.createElement("span");
-  pill.className = `quality-pill ${quality.level}`;
-  pill.textContent = quality.level === "low" ? "check ASR" : "watch ASR";
-  pill.title = quality.reasons?.length ? quality.reasons.join(", ") : "";
-  return pill;
-}
-
 function recordPendingTranscript(payload, elapsedSeconds) {
   const id = payload.id || `local-${Date.now()}`;
   const startedMs = startedAt ? Date.now() - startedAt : elapsedSeconds * 1000;
   closePreviousTranscript(startedMs);
-  transcriptItems.push({
+  const item = {
     id,
     startMs: startedMs,
     endMs: startedMs + 3500,
@@ -751,12 +1400,15 @@ function recordPendingTranscript(payload, elapsedSeconds) {
     pending: true,
     mode: payload.mode || qualityModeEl.value
     ,quality: payload.quality
-  });
+  };
+  transcriptItems.push(item);
+  transcriptById.set(id, item);
+  return item;
 }
 
 function recordFinalTranscript(payload, elapsedSeconds) {
   const id = payload.id;
-  const item = transcriptItems.find(row => row.id === id);
+  const item = id ? transcriptById.get(id) : null;
   if (item) {
     item.dutch = payload.dutch || item.dutch;
     item.translation = payload.translation || item.translation;
@@ -766,7 +1418,7 @@ function recordFinalTranscript(payload, elapsedSeconds) {
     return;
   }
   const startedMs = startedAt ? Date.now() - startedAt : elapsedSeconds * 1000;
-  transcriptItems.push({
+  const newItem = {
     id: id || `local-${Date.now()}`,
     startMs: startedMs,
     endMs: startedMs + 3500,
@@ -775,7 +1427,13 @@ function recordFinalTranscript(payload, elapsedSeconds) {
     pending: false,
     mode: payload.mode || qualityModeEl.value,
     quality: payload.quality
-  });
+  };
+  transcriptItems.push(newItem);
+  transcriptById.set(newItem.id, newItem);
+}
+
+function rebuildTranscriptIndex() {
+  transcriptById = new Map(transcriptItems.filter(item => item?.id).map(item => [item.id, item]));
 }
 
 function closePreviousTranscript(nextStartMs) {
@@ -789,7 +1447,11 @@ function exportTranscript(format) {
     setStatus("No subtitles to export.", true);
     return;
   }
-  const content = format === "srt" ? toSrt(rows) : format === "vtt" ? toVtt(rows) : toTxt(rows);
+  const content = format === "srt"
+    ? SubtitleRenderer.toSrt(rows)
+    : format === "vtt"
+      ? SubtitleRenderer.toVtt(rows)
+      : SubtitleRenderer.toTxt(rows);
   const mime = format === "txt" ? "text/plain" : "text/vtt";
   const blob = new Blob([content], { type: `${mime};charset=utf-8` });
   const url = URL.createObjectURL(blob);
@@ -803,45 +1465,64 @@ function exportTranscript(format) {
   setStatus(`Exported ${format.toUpperCase()}`);
 }
 
-function toTxt(rows) {
-  return SubtitleRenderer.toTxt(rows);
-}
-
-function toVtt(rows) {
-  return SubtitleRenderer.toVtt(rows);
-}
-
-function toSrt(rows) {
-  return SubtitleRenderer.toSrt(rows);
-}
-
-function formatTime(ms, includeHours) {
-  return SubtitleRenderer.formatTime(ms, includeHours);
-}
-
-function scheduleReconnect(socket) {
-  if (manualStopRequested || ws !== socket || !mediaStream || !workletNode || reconnecting) return;
-  reconnecting = true;
+function scheduleReconnect() {
+  if (manualStopRequested || !mediaStream || !workletNode || reconnecting || reconnectTimer !== null) return;
   reconnectAttempts += 1;
   if (reconnectAttempts > 20) {
     setStatus("Reconnect failed. Restart capture.", true);
+    updateRetryStatus("Failed after 20 tries", "bad");
     return;
   }
   setStatus(`Reconnecting to backend... ${reconnectAttempts}`, true);
-  setTimeout(async () => {
-    reconnecting = false;
+  updateRetryStatus(`Retry ${reconnectAttempts}/20`, "warn");
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
     if (manualStopRequested || !mediaStream || !workletNode) return;
+    reconnecting = true;
     try {
-      ws = await connectWebSocket(backendUrlEl.value.trim());
+      const connection = await reconcileBackendConnection();
+      const websocketUrl = connection?.wsUrl || backendUrlEl.value.trim() || BackendClient.getWsUrl();
+      const savedConnection = BackendClient.setWsUrl(websocketUrl, { source: "reconnect" });
+      if (!savedConnection) throw new Error("Saved backend WebSocket URL is invalid.");
+      backendUrlEl.value = savedConnection.wsUrl;
+      const socket = await connectWebSocket(savedConnection.wsUrl);
+      if (manualStopRequested || !mediaStream || !workletNode) {
+        socket.close();
+        return;
+      }
+      ws = socket;
       sendConfigIfOpen();
       setStatus("Reconnected");
+      updateRetryStatus("Reconnected", "good");
       reconnectAttempts = 0;
       logClient("info", "websocket_reconnected");
     } catch (err) {
       logClient("warn", "websocket_reconnect_failed", { error: err?.message || String(err), attempt: reconnectAttempts });
-      scheduleReconnect(socket);
+      updateRetryStatus(`Retry failed: ${err?.message || "connection error"}`, "bad");
+    } finally {
+      reconnecting = false;
+      if (!ws || ws.readyState !== WebSocket.OPEN) scheduleReconnect();
     }
   }, Math.min(1000 + reconnectAttempts * 500, 5000));
+}
+
+async function reconcileBackendConnection() {
+  if (connectionRecoveryPromise) return connectionRecoveryPromise;
+  connectionRecoveryPromise = BackendClient.findHealthyConnection().then(connection => {
+    if (!connection) return null;
+    backendUrlEl.value = connection.wsUrl;
+    if (connection.recovered) {
+      logClient("info", "backend_connection_recovered", {
+        baseUrl: connection.baseUrl,
+        source: connection.source,
+        metadata: BackendClient.getConnectionMetadata()
+      });
+    }
+    return connection;
+  }).finally(() => {
+    connectionRecoveryPromise = null;
+  });
+  return connectionRecoveryPromise;
 }
 
 async function refreshGlossary() {
@@ -853,6 +1534,16 @@ async function refreshGlossary() {
   } catch (err) {
     logClient("warn", "glossary_load_failed", { error: err?.message || String(err) });
   }
+}
+
+function openGlossaryDialog() {
+  if (!glossaryDialogEl) return;
+  if (typeof glossaryDialogEl.showModal === "function") {
+    glossaryDialogEl.showModal();
+  } else {
+    glossaryDialogEl.setAttribute("open", "");
+  }
+  if (glossarySearchEl) glossarySearchEl.focus();
 }
 
 async function addGlossaryRule() {
@@ -885,11 +1576,22 @@ async function saveGlossary() {
 
 function renderGlossary() {
   glossaryListEl.innerHTML = "";
+  const query = (glossarySearchEl?.value || "").trim().toLowerCase();
+  const visibleRules = query
+    ? glossaryRules
+        .map((rule, index) => ({ rule, index }))
+        .filter(({ rule }) => `${rule.pattern} ${rule.replacement}`.toLowerCase().includes(query))
+    : glossaryRules.map((rule, index) => ({ rule, index }));
+
   if (!glossaryRules.length) {
     glossaryListEl.textContent = "No glossary rules.";
     return;
   }
-  glossaryRules.forEach((rule, index) => {
+  if (!visibleRules.length) {
+    glossaryListEl.textContent = "No matching glossary rules.";
+    return;
+  }
+  visibleRules.forEach(({ rule, index }) => {
     const row = document.createElement("div");
     row.className = "glossary-row";
     const pattern = document.createElement("span");
@@ -907,13 +1609,43 @@ function renderGlossary() {
   });
 }
 
+function updateLatencyBadges(values = {}) {
+  if (latencyEl) latencyEl.textContent = typeof values.total === "number" ? `${values.total} ms` : "-";
+  if (asrLatencyEl) asrLatencyEl.textContent = typeof values.asr === "number" ? `${values.asr} ms` : "-";
+  if (translationLatencyEl) translationLatencyEl.textContent = typeof values.translation === "number" ? `${values.translation} ms` : "-";
+}
+
+function updateRetryStatus(message, state) {
+  if (!retryStatusEl) return;
+  retryStatusEl.textContent = message;
+  SubtitleUI.setBadgeState(retryStatusEl.closest(".status-badge"), state);
+}
+
+function setAudioStatus(message) {
+  audioStatusEl.textContent = message;
+  const isCapturing = message.toLowerCase().includes("capturing");
+  if (capturingBadgeEl) {
+    capturingBadgeEl.textContent = isCapturing ? "Yes" : message === "Not capturing" ? "No" : message;
+    SubtitleUI.setBadgeState(capturingBadgeEl.closest(".status-badge"), isCapturing ? "good" : message === "Not capturing" ? "idle" : "warn");
+  }
+}
+
+function updateConnectionBadge(message, state) {
+  if (!connectedBadgeEl) return;
+  connectedBadgeEl.textContent = message;
+  SubtitleUI.setBadgeState(connectedBadgeEl.closest(".status-badge"), state);
+}
+
 function handleShortcut(event) {
   const tag = event.target?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || event.altKey || event.ctrlKey || event.metaKey) return;
   if (event.key === " ") {
     event.preventDefault();
     if (ws && ws.readyState === WebSocket.OPEN) stopCapture();
-    else startCapture();
+    else startTranslation();
+  } else if (event.key.toLowerCase() === "p") {
+    event.preventDefault();
+    togglePause();
   } else if (event.key.toLowerCase() === "f") {
     event.preventDefault();
     cycleFontSize();
@@ -925,10 +1657,9 @@ function handleShortcut(event) {
   } else if (event.key.toLowerCase() === "e") {
     event.preventDefault();
     exportTranscript("txt");
-  } else if (event.key.toLowerCase() === "h" && historyDrawerEl) {
+  } else if (event.key.toLowerCase() === "g") {
     event.preventDefault();
-    historyDrawerEl.open = !historyDrawerEl.open;
-    updateHistorySummary();
+    openGlossaryDialog();
   }
 }
 

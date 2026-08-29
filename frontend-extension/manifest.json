@@ -15,8 +15,10 @@
     "http://localhost/*"
   ],
   "action": {
-    "default_title": "Dutch Subtitles",
-    "default_popup": "popup.html"
+    "default_title": "Open Dutch Subtitles"
+  },
+  "background": {
+    "service_worker": "background.js"
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*;"

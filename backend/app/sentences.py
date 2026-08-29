@@ -7,12 +7,20 @@ from dataclasses import dataclass, field
 
 from .text_processor import get_text_processor
 
-
 _TERMINAL_RE = re.compile(r'(?<=[.!?…])(?:["”’\)\]]+)?\s+')
 _WORD_RE = re.compile(r"\b[\wÀ-ÿ'-]+\b", re.UNICODE)
 
 _FILLERS = {
-    "ehm", "euh", "uh", "um", "uhm", "hm", "hmm", "mmm", "ja ehm", "nou ehm",
+    "ehm",
+    "euh",
+    "uh",
+    "um",
+    "uhm",
+    "hm",
+    "hmm",
+    "mmm",
+    "ja ehm",
+    "nou ehm",
 }
 
 
@@ -120,7 +128,7 @@ class SentenceAssembler:
         """
         static_prompt = " ".join([os.getenv("ASR_INITIAL_PROMPT", "").strip(), self.session_prompt.strip()]).strip()
         dynamic = " ".join([*self._recent, self._buffer]).strip()
-        prompt = " ".join(part for part in [static_prompt, dynamic[-self.context_chars:]] if part).strip()
+        prompt = " ".join(part for part in [static_prompt, dynamic[-self.context_chars :]] if part).strip()
         return prompt or None
 
     def _remember(self, sentence: str) -> None:
@@ -180,9 +188,7 @@ class SentenceAssembler:
 
         remainder = normalize_fragment(text[start:]) if start else text
 
-        if not completed and (
-            word_count(remainder) >= self.max_buffer_words or len(remainder) >= self.max_buffer_chars
-        ):
+        if not completed and (word_count(remainder) >= self.max_buffer_words or len(remainder) >= self.max_buffer_chars):
             if not processor.ends_with_connector(remainder):
                 return [self._finish_sentence(remainder)], ""
 

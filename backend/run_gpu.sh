@@ -16,6 +16,15 @@ if [ -f ".env" ]; then
   set +a
 fi
 
+# Native host requests take precedence over local .env values. This lets the
+# extension switch between CPU and CUDA without rewriting user configuration.
+if [ -n "${ASR_DEVICE_OVERRIDE:-}" ]; then
+  export ASR_DEVICE="$ASR_DEVICE_OVERRIDE"
+fi
+if [ -n "${ASR_COMPUTE_TYPE_OVERRIDE:-}" ]; then
+  export ASR_COMPUTE_TYPE="$ASR_COMPUTE_TYPE_OVERRIDE"
+fi
+
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [ -z "$PYTHON_BIN" ]; then
   if command -v python >/dev/null 2>&1; then
@@ -37,11 +46,11 @@ export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 # Keep subtitle text out of logs by default. Set LOG_TRANSCRIPT_TEXT=1 only while debugging.
 export LOG_TRANSCRIPT_TEXT="${LOG_TRANSCRIPT_TEXT:-0}"
 
-# Stable live-latency defaults for RTX 3060 12 GB.
+# CPU is the portable default. Select CUDA explicitly when an NVIDIA GPU is available.
 # For higher precision, run: ASR_MODEL=medium ./run_gpu.sh
-export ASR_DEVICE="${ASR_DEVICE:-cuda}"
+export ASR_DEVICE="${ASR_DEVICE:-cpu}"
 export ASR_MODEL="${ASR_MODEL:-small}"
-export ASR_COMPUTE_TYPE="${ASR_COMPUTE_TYPE:-float16}"
+export ASR_COMPUTE_TYPE="${ASR_COMPUTE_TYPE:-int8}"
 export ASR_LANGUAGE="${ASR_LANGUAGE:-nl}"
 export ASR_BEAM_SIZE="${ASR_BEAM_SIZE:-2}"
 export FAST_ASR_BEAM_SIZE="${FAST_ASR_BEAM_SIZE:-1}"
@@ -56,6 +65,8 @@ export PARTIAL_ASR_ENABLED="${PARTIAL_ASR_ENABLED:-1}"
 export PARTIAL_ASR_INTERVAL_MS="${PARTIAL_ASR_INTERVAL_MS:-900}"
 export PARTIAL_ASR_MAX_SECONDS="${PARTIAL_ASR_MAX_SECONDS:-1.8}"
 export PIPELINE_QUEUE_MAX_SEGMENTS="${PIPELINE_QUEUE_MAX_SEGMENTS:-3}"
+export PIPELINE_MERGE_MAX_SECONDS="${PIPELINE_MERGE_MAX_SECONDS:-12}"
+export TRANSLATION_QUEUE_MAX_ITEMS="${TRANSLATION_QUEUE_MAX_ITEMS:-4}"
 export DROP_FILLERS="${DROP_FILLERS:-1}"
 export GLOSSARY_ENABLED="${GLOSSARY_ENABLED:-0}"
 export GLOSSARY_PATH="${GLOSSARY_PATH:-config/glossary.tsv}"
@@ -81,6 +92,7 @@ export TRANSLATION_DEVICE="${TRANSLATION_DEVICE:-cpu}"
 export TRANSLATION_COMPUTE_TYPE="${TRANSLATION_COMPUTE_TYPE:-int8}"
 export TRANSLATION_BEAM_SIZE="${TRANSLATION_BEAM_SIZE:-1}"
 export TRANSLATION_CACHE_ITEMS="${TRANSLATION_CACHE_ITEMS:-4096}"
+export LOCAL_MODELS_ONLY="${LOCAL_MODELS_ONLY:-1}"
 export BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 export BACKEND_PORT="${BACKEND_PORT:-8000}"
 

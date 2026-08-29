@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.metrics import SessionMetrics, SessionMetricsStore
+from app.metrics import METRIC_SAMPLE_LIMIT, SessionMetrics, SessionMetricsStore
 
 
 def test_session_metrics_summary() -> None:
@@ -18,3 +18,21 @@ def test_session_metrics_store_eviction() -> None:
     store.create("b")
     assert store.get("a") is None
     assert store.get("b") is not None
+
+
+def test_session_metrics_samples_are_bounded() -> None:
+    metrics = SessionMetrics(client_id="long-session")
+    metrics.asr_latency_ms.extend(range(METRIC_SAMPLE_LIMIT + 25))
+
+    snapshot = metrics.snapshot()
+
+    assert len(snapshot["asr_latency_ms"]) == METRIC_SAMPLE_LIMIT
+    assert snapshot["asr_latency_ms"][0] == 25
+
+
+def test_session_metrics_preserve_lifetime_audio_total() -> None:
+    metrics = SessionMetrics(client_id="long-session")
+    metrics.audio_seconds_total = 1234.5
+    metrics.audio_seconds.extend([1.0, 2.0])
+
+    assert metrics.snapshot()["summary"]["audio_seconds_total"] == 1234.5

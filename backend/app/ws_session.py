@@ -17,8 +17,8 @@ from .history import session_history_store
 from .logger import get_logger, preview_text
 from .metrics import SessionMetrics, session_metrics_store
 from .pipeline import adapt_segmenter, transcribe_and_collect_sentences, transcribe_partial, translate_many_sentences
-from .security import origin_allowed
 from .schemas import ClientConfig, ClientConfigMessage
+from .security import origin_allowed
 from .sentences import SentenceAssembler
 
 logger = get_logger("ws")
@@ -31,6 +31,17 @@ class SegmentJob:
     config: ClientConfig
     created_at: float
     force: bool = True
+    generation: int = 0
+
+
+@dataclass(frozen=True)
+class TranslationJob:
+    subtitle_items: list[dict[str, Any]]
+    config: ClientConfig
+    asr_latency_ms: int
+    queue_delay_ms: int
+    audio_seconds: float
+    fragment: str
 
 
 @dataclass
@@ -53,18 +64,26 @@ class SubtitleWebSocketSession:
         self.segmenter = SpeechSegmenter(sample_rate=self.config.sample_rate)
         self.segmenter.set_mode(self.config.mode)
         self.sentence_assembler = SentenceAssembler()
-        self.queue: asyncio.Queue[SegmentJob] = asyncio.Queue(maxsize=int(os.getenv("PIPELINE_QUEUE_MAX_SEGMENTS", "3")))
+        self.queue: asyncio.Queue[SegmentJob] = asyncio.Queue(maxsize=max(1, int(os.getenv("PIPELINE_QUEUE_MAX_SEGMENTS", "3"))))
+        self.translation_queue: asyncio.Queue[TranslationJob] = asyncio.Queue(
+            maxsize=max(1, int(os.getenv("TRANSLATION_QUEUE_MAX_ITEMS", "4")))
+        )
+        self.history_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=64)
         self.send_lock = asyncio.Lock()
-        self.translation_tasks: set[asyncio.Task[None]] = set()
         self.processor_task: asyncio.Task[None] | None = None
+        self.translation_task: asyncio.Task[None] | None = None
+        self.history_task: asyncio.Task[None] | None = None
         self.stats = SessionStats()
         self.metrics: SessionMetrics = session_metrics_store.create(self.client_id)
-        session_history_store.save_session(self.metrics)
         self.closed = False
+        self.flush_requested = False
         self.partial_enabled = _env_bool("PARTIAL_ASR_ENABLED", True)
         self.partial_interval_ms = int(os.getenv("PARTIAL_ASR_INTERVAL_MS", "900"))
         self.partial_max_seconds = float(os.getenv("PARTIAL_ASR_MAX_SECONDS", "1.8"))
         self._last_partial_at = 0.0
+        self._processing_kind: str | None = None
+        self._translation_in_progress = False
+        self._final_generation = 0
 
     async def run(self) -> None:
         origin = self.websocket.headers.get("origin")
@@ -74,7 +93,12 @@ class SubtitleWebSocketSession:
             return
         await self.websocket.accept()
         logger.info("websocket_connected client_id=%s", self.client_id)
+        if session_history_store.enabled:
+            await asyncio.to_thread(session_history_store.save_session, self.metrics)
         self.processor_task = asyncio.create_task(self._process_jobs(), name=f"{self.client_id}-processor")
+        self.translation_task = asyncio.create_task(self._process_translations(), name=f"{self.client_id}-translator")
+        if session_history_store.enabled:
+            self.history_task = asyncio.create_task(self._process_history(), name=f"{self.client_id}-history")
         await self._send_json({"type": "ready", "message": "Backend WebSocket connected", "client_id": self.client_id})
 
         try:
@@ -98,6 +122,8 @@ class SubtitleWebSocketSession:
 
             if "bytes" not in message or message["bytes"] is None:
                 continue
+            if self.flush_requested:
+                continue
 
             audio = pcm16le_to_float32(message["bytes"])
             self.stats.audio_chunks += 1
@@ -117,13 +143,32 @@ class SubtitleWebSocketSession:
                 float(len(finalized)) / float(self.config.sample_rate),
                 self.queue.qsize(),
             )
-            await self._enqueue(SegmentJob("final", finalized, self.config, time.perf_counter(), force=True))
+            await self._enqueue(
+                SegmentJob(
+                    "final",
+                    finalized,
+                    self.config,
+                    time.perf_counter(),
+                    force=self.segmenter.last_finalize_reason == "silence",
+                    generation=self._next_final_generation(),
+                )
+            )
 
     async def _handle_text(self, raw: str) -> None:
         if _is_flush(raw):
+            self.flush_requested = True
             finalized = self.segmenter.flush()
             if finalized is not None:
-                await self._enqueue(SegmentJob("final", finalized, self.config, time.perf_counter(), force=True))
+                await self._enqueue(
+                    SegmentJob(
+                        "final",
+                        finalized,
+                        self.config,
+                        time.perf_counter(),
+                        force=True,
+                        generation=self._next_final_generation(),
+                    )
+                )
             await self._enqueue(SegmentJob("flush", None, self.config, time.perf_counter(), force=True))
             return
 
@@ -155,7 +200,7 @@ class SubtitleWebSocketSession:
         await self._send_json({"type": "config_ack", "config": self.config.__dict__})
 
     async def _maybe_enqueue_partial(self) -> None:
-        if not self.partial_enabled or self.queue.qsize() > 0:
+        if not self.partial_enabled or self.queue.qsize() > 0 or self._processing_kind is not None:
             return
         now = time.perf_counter()
         if (now - self._last_partial_at) * 1000 < self.partial_interval_ms:
@@ -166,39 +211,82 @@ class SubtitleWebSocketSession:
         self._last_partial_at = now
         self.stats.partial_segments += 1
         self.metrics.partial_segments = self.stats.partial_segments
-        await self._enqueue(SegmentJob("partial", snapshot, self.config, now, force=False), merge_when_full=False)
+        await self._enqueue(
+            SegmentJob("partial", snapshot, self.config, now, force=False, generation=self._final_generation),
+            merge_when_full=False,
+        )
 
     async def _enqueue(self, job: SegmentJob, merge_when_full: bool = True) -> None:
         if self.queue.full():
-            try:
-                old = self.queue.get_nowait()
-                self.queue.task_done()
-            except asyncio.QueueEmpty:
-                old = None
-            if merge_when_full and old and old.kind == "final" and job.kind == "final" and old.audio is not None and job.audio is not None:
-                job.audio = np.concatenate([old.audio, job.audio]).astype(np.float32, copy=False)
+            if job.kind == "partial":
+                self._record_dropped_segment("partial", job.kind)
+                return
+            if job.kind == "flush":
+                await self.queue.put(job)
+                return
+            pending = self._take_pending_jobs()
+            partial_index = next((index for index, item in enumerate(pending) if item.kind == "partial"), None)
+            if partial_index is not None:
+                dropped = pending.pop(partial_index)
+                self._record_dropped_segment(dropped.kind, job.kind)
+            elif (
+                merge_when_full
+                and pending
+                and pending[-1].kind == "final"
+                and job.kind == "final"
+                and pending[-1].audio is not None
+                and job.audio is not None
+                and len(pending[-1].audio) + len(job.audio)
+                <= int(job.config.sample_rate * float(os.getenv("PIPELINE_MERGE_MAX_SECONDS", "12")))
+            ):
+                previous = pending.pop()
+                job.audio = np.concatenate([previous.audio, job.audio]).astype(np.float32, copy=False)
+                job.created_at = min(previous.created_at, job.created_at)
                 self.stats.merged_segments += 1
                 self.metrics.merged_segments = self.stats.merged_segments
             else:
-                self.stats.dropped_segments += 1
-                self.metrics.dropped_segments = self.stats.dropped_segments
-                logger.warning("pipeline_queue_drop client_id=%s dropped_kind=%s new_kind=%s", self.client_id, getattr(old, "kind", None), job.kind)
+                await self._restore_pending_jobs(pending)
+                await self.queue.put(job)
+                return
+            for pending_job in pending:
+                self.queue.put_nowait(pending_job)
         await self.queue.put(job)
         self.stats.max_queue_depth = max(self.stats.max_queue_depth, self.queue.qsize())
         self.metrics.max_queue_depth = self.stats.max_queue_depth
         self.metrics.touch()
 
+    def _take_pending_jobs(self) -> list[SegmentJob]:
+        pending: list[SegmentJob] = []
+        while True:
+            try:
+                pending.append(self.queue.get_nowait())
+                self.queue.task_done()
+            except asyncio.QueueEmpty:
+                return pending
+
+    async def _restore_pending_jobs(self, pending: list[SegmentJob]) -> None:
+        for pending_job in pending:
+            await self.queue.put(pending_job)
+
     async def _process_jobs(self) -> None:
         while True:
             job = await self.queue.get()
+            self._processing_kind = job.kind
             try:
                 if job.kind == "partial":
                     await self._process_partial(job)
                 elif job.kind == "flush":
-                    await self._send_sentences(self.sentence_assembler.flush(), job.config, {"asr_latency_ms": 0, "audio_seconds": 0.0, "fragment": ""})
+                    await self._send_sentences(
+                        self.sentence_assembler.flush(), job.config, {"asr_latency_ms": 0, "audio_seconds": 0.0, "fragment": ""}
+                    )
+                    await self.translation_queue.join()
+                    if session_history_store.enabled:
+                        await self.history_queue.join()
+                    await self._safe_send_json({"type": "flushed"})
                 elif job.audio is not None:
                     await self._process_final(job)
             finally:
+                self._processing_kind = None
                 self.queue.task_done()
 
     async def _process_partial(self, job: SegmentJob) -> None:
@@ -211,7 +299,7 @@ class SubtitleWebSocketSession:
             logger.exception("partial_asr_failure client_id=%s", self.client_id)
             await self._safe_send_json(map_exception(exc).payload(debug_enabled=_env_bool("DEBUG_ERRORS", False)))
             return
-        if not text:
+        if not text or job.generation != self._final_generation:
             return
         await self._send_json(
             {
@@ -227,6 +315,7 @@ class SubtitleWebSocketSession:
     async def _process_final(self, job: SegmentJob) -> None:
         if job.audio is None:
             return
+        queue_delay_ms = max(0, int((time.perf_counter() - job.created_at) * 1000))
         try:
             sentences, meta = await asyncio.to_thread(
                 transcribe_and_collect_sentences,
@@ -242,9 +331,13 @@ class SubtitleWebSocketSession:
         adapt_segmenter(self.segmenter, job.config, float(meta.get("realtime_factor") or 0.0))
         await self._maybe_degrade_mode(job.config, float(meta.get("realtime_factor") or 0.0))
         self.metrics.asr_latency_ms.append(int(meta.get("asr_latency_ms") or 0))
-        self.metrics.audio_seconds.append(float(meta.get("audio_seconds") or 0.0))
+        audio_seconds = float(meta.get("audio_seconds") or 0.0)
+        self.metrics.audio_seconds.append(audio_seconds)
+        self.metrics.audio_seconds_total += audio_seconds
         self.metrics.realtime_factors.append(float(meta.get("realtime_factor") or 0.0))
+        self.metrics.queue_delay_ms.append(queue_delay_ms)
         self.metrics.touch()
+        meta["queue_delay_ms"] = queue_delay_ms
         await self._send_sentences(sentences, job.config, meta)
 
     async def _maybe_degrade_mode(self, config: ClientConfig, realtime_factor: float) -> None:
@@ -271,13 +364,18 @@ class SubtitleWebSocketSession:
         if not sentences:
             fragment = str(meta.get("fragment") or "").strip()
             if fragment:
-                logger.debug("sentence_buffering fragment=%s asr_latency_ms=%s", preview_text(fragment), int(meta.get("asr_latency_ms") or 0))
+                logger.debug(
+                    "sentence_buffering fragment=%s asr_latency_ms=%s", preview_text(fragment), int(meta.get("asr_latency_ms") or 0)
+                )
             if fragment and os.getenv("SEND_DEBUG_FRAGMENTS", "0") == "1":
-                await self._send_json({"type": "debug_fragment", "fragment": fragment, "asr_latency_ms": int(meta.get("asr_latency_ms") or 0)})
+                await self._send_json(
+                    {"type": "debug_fragment", "fragment": fragment, "asr_latency_ms": int(meta.get("asr_latency_ms") or 0)}
+                )
             return
 
         subtitle_items: list[dict[str, Any]] = []
         asr_latency_ms = int(meta.get("asr_latency_ms") or 0)
+        queue_delay_ms = int(meta.get("queue_delay_ms") or 0)
         audio_seconds = float(meta.get("audio_seconds") or 0.0)
         fragment = str(meta.get("fragment") or "")
         quality = meta.get("quality") or {}
@@ -286,7 +384,6 @@ class SubtitleWebSocketSession:
                 continue
             subtitle_id = f"final-{time.time_ns()}"
             subtitle_items.append({"id": subtitle_id, "sentence": sentence, "quality": quality})
-            logger.info("subtitle_pending id=%s asr_latency_ms=%s audio_seconds=%.2f dutch=%s", subtitle_id, asr_latency_ms, audio_seconds, preview_text(sentence))
             await self._send_json(
                 {
                     "type": "final_pending",
@@ -297,34 +394,60 @@ class SubtitleWebSocketSession:
                     "dutch": sentence,
                     "translation": "Translating...",
                     "asr_latency_ms": asr_latency_ms,
-                    "latency_ms": asr_latency_ms,
+                    "queue_delay_ms": queue_delay_ms,
+                    "latency_ms": queue_delay_ms + asr_latency_ms,
                     "audio_seconds": audio_seconds,
                     "asr_fragment": fragment,
                     "sentence_mode": True,
                     "quality": quality,
                 }
             )
+            logger.debug(
+                "subtitle_pending id=%s asr_latency_ms=%s audio_seconds=%.2f dutch=%s",
+                subtitle_id,
+                asr_latency_ms,
+                audio_seconds,
+                preview_text(sentence),
+            )
 
         if subtitle_items:
-            task = asyncio.create_task(self._translate_and_send(subtitle_items, config, asr_latency_ms, audio_seconds, fragment), name=f"{self.client_id}-translate")
-            self.translation_tasks.add(task)
-            task.add_done_callback(self.translation_tasks.discard)
+            await self.translation_queue.put(
+                TranslationJob(subtitle_items, config, asr_latency_ms, queue_delay_ms, audio_seconds, fragment)
+            )
             self.stats.translations_started += 1
             self.metrics.translations_started = self.stats.translations_started
             self.metrics.touch()
+
+    async def _process_translations(self) -> None:
+        while True:
+            job = await self.translation_queue.get()
+            self._translation_in_progress = True
+            try:
+                await self._translate_and_send(
+                    job.subtitle_items,
+                    job.config,
+                    job.asr_latency_ms,
+                    job.queue_delay_ms,
+                    job.audio_seconds,
+                    job.fragment,
+                )
+            finally:
+                self._translation_in_progress = False
+                self.translation_queue.task_done()
 
     async def _translate_and_send(
         self,
         subtitle_items: list[dict[str, Any]],
         config: ClientConfig,
         asr_latency_ms: int,
+        queue_delay_ms: int,
         audio_seconds: float,
         fragment: str,
     ) -> None:
         translation_start = time.perf_counter()
         sentences = [item["sentence"] for item in subtitle_items]
         try:
-            translations = await asyncio.to_thread(translate_many_sentences, sentences)
+            translations = await asyncio.to_thread(translate_many_sentences, sentences, config)
         except Exception as exc:
             logger.exception("translation_failure client_id=%s count=%s", self.client_id, len(sentences))
             safe_error = map_exception(exc)
@@ -334,16 +457,9 @@ class SubtitleWebSocketSession:
         self.metrics.mt_latency_ms.append(translation_latency_ms)
 
         for item, translation in zip(subtitle_items, translations, strict=False):
-            total_latency_ms = asr_latency_ms + translation_latency_ms
+            total_latency_ms = queue_delay_ms + asr_latency_ms + translation_latency_ms
             self.metrics.total_latency_ms.append(total_latency_ms)
             self.metrics.touch()
-            logger.info(
-                "subtitle_final id=%s translation_latency_ms=%s total_latency_ms=%s translation=%s",
-                item["id"],
-                translation_latency_ms,
-                total_latency_ms,
-                preview_text(translation),
-            )
             payload = {
                 "type": "final",
                 "id": item["id"],
@@ -353,15 +469,24 @@ class SubtitleWebSocketSession:
                 "dutch": item["sentence"],
                 "translation": translation,
                 "asr_latency_ms": asr_latency_ms,
+                "queue_delay_ms": queue_delay_ms,
                 "translation_latency_ms": translation_latency_ms,
                 "latency_ms": total_latency_ms,
                 "audio_seconds": audio_seconds,
                 "asr_fragment": fragment,
                 "sentence_mode": True,
-                "quality": item.get("quality") or ({"level": "good"} if translation else {"level": "watch", "reasons": ["translation_unavailable"]}),
+                "quality": item.get("quality")
+                or ({"level": "good"} if translation else {"level": "watch", "reasons": ["translation_unavailable"]}),
             }
-            await asyncio.to_thread(session_history_store.save_subtitle, self.client_id, payload)
             await self._send_json(payload)
+            logger.debug(
+                "subtitle_final id=%s translation_latency_ms=%s total_latency_ms=%s translation=%s",
+                item["id"],
+                translation_latency_ms,
+                total_latency_ms,
+                preview_text(translation),
+            )
+            await self._persist_subtitle(payload)
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
         if self.closed:
@@ -372,17 +497,34 @@ class SubtitleWebSocketSession:
     async def _safe_send_json(self, payload: dict[str, Any]) -> None:
         try:
             await self._send_json(payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("websocket_send_failed client_id=%s error=%s", self.client_id, exc)
 
-    async def _cancel_translations(self) -> None:
-        for task in list(self.translation_tasks):
-            if not task.done():
-                task.cancel()
-                self.stats.translations_cancelled += 1
-                self.metrics.translations_cancelled = self.stats.translations_cancelled
-        await asyncio.gather(*self.translation_tasks, return_exceptions=True)
-        self.translation_tasks.clear()
+    async def _persist_subtitle(self, payload: dict[str, Any]) -> None:
+        if session_history_store.enabled:
+            await self.history_queue.put(payload)
+
+    async def _process_history(self) -> None:
+        while True:
+            payload = await self.history_queue.get()
+            try:
+                await asyncio.to_thread(session_history_store.save_subtitle, self.client_id, payload)
+            finally:
+                self.history_queue.task_done()
+
+    def _next_final_generation(self) -> int:
+        self._final_generation += 1
+        return self._final_generation
+
+    def _record_dropped_segment(self, dropped_kind: str, new_kind: str) -> None:
+        self.stats.dropped_segments += 1
+        self.metrics.dropped_segments = self.stats.dropped_segments
+        logger.warning(
+            "pipeline_queue_drop client_id=%s dropped_kind=%s new_kind=%s",
+            self.client_id,
+            dropped_kind,
+            new_kind,
+        )
 
     def _drain_queue(self) -> None:
         while True:
@@ -394,16 +536,46 @@ class SubtitleWebSocketSession:
 
     async def _cleanup(self) -> None:
         self.closed = True
-        await self._cancel_translations()
         if self.processor_task and not self.processor_task.done():
             self.processor_task.cancel()
             await _cancel_task(self.processor_task)
+        if self.translation_task and not self.translation_task.done():
+            self.translation_task.cancel()
+            self.stats.translations_cancelled += self.translation_queue.qsize() + int(self._translation_in_progress)
+            self.metrics.translations_cancelled = self.stats.translations_cancelled
+            await _cancel_task(self.translation_task)
+        if self.history_task and not self.history_task.done():
+            try:
+                await asyncio.wait_for(self.history_queue.join(), timeout=2.0)
+            except TimeoutError:
+                logger.warning("session_history_drain_timeout client_id=%s pending=%s", self.client_id, self.history_queue.qsize())
+            self.history_task.cancel()
+            await _cancel_task(self.history_task)
         self._drain_queue()
+        self._drain_translation_queue()
+        self._drain_history_queue()
         self.sentence_assembler.flush()
         self.metrics.closed_at = time.time()
         self.metrics.touch()
-        await asyncio.to_thread(session_history_store.save_session, self.metrics)
+        if session_history_store.enabled:
+            await asyncio.to_thread(session_history_store.save_session, self.metrics)
         logger.info("session_metrics client_id=%s metrics=%s", self.client_id, self.metrics.snapshot())
+
+    def _drain_translation_queue(self) -> None:
+        while True:
+            try:
+                self.translation_queue.get_nowait()
+                self.translation_queue.task_done()
+            except asyncio.QueueEmpty:
+                return
+
+    def _drain_history_queue(self) -> None:
+        while True:
+            try:
+                self.history_queue.get_nowait()
+                self.history_queue.task_done()
+            except asyncio.QueueEmpty:
+                return
 
 
 async def run_subtitle_session(websocket: WebSocket) -> None:
@@ -425,8 +597,8 @@ class ConfigIgnored(Exception):
 def _parse_config(raw: str) -> ClientConfig:
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
-        raise ConfigIgnored
+    except json.JSONDecodeError as exc:
+        raise ConfigIgnored from exc
 
     if payload.get("type") != "config":
         raise ConfigIgnored

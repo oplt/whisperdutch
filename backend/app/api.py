@@ -38,6 +38,14 @@ class RuntimeState:
 runtime_state = RuntimeState()
 
 
+def _translation_cache_metrics() -> dict[str, Any]:
+    try:
+        return get_translation_engine().cache_info()
+    except Exception as exc:
+        logger.exception("translation_cache_metrics_failed")
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def warmup_models() -> None:
     start = time.perf_counter()
     logger.info("startup_warmup_started")
@@ -152,9 +160,13 @@ def register_routes(app: FastAPI) -> None:
                 "final_translation_is_blocking": False,
                 "bounded_queue": True,
                 "queue_max_segments": int(os.getenv("PIPELINE_QUEUE_MAX_SEGMENTS", "3")),
+                "merge_max_seconds": float(os.getenv("PIPELINE_MERGE_MAX_SECONDS", "12")),
+                "translation_queue_max_items": int(os.getenv("TRANSLATION_QUEUE_MAX_ITEMS", "4")),
+                "final_segments_preserved_under_backpressure": True,
                 "adaptive_segmentation": True,
                 "translation_batching": True,
                 "translation_cache": "lru",
+                "translation_cache_backend": (translation_info or {}).get("translation_cache", {}).get("backend"),
                 "sentence_mode": True,
                 "glossary_enabled": os.getenv("GLOSSARY_ENABLED", "0") == "1",
                 "asr_initial_prompt_default": "empty",
@@ -163,8 +175,17 @@ def register_routes(app: FastAPI) -> None:
                     "enabled": session_history_store.enabled,
                     "db_path": str(session_history_store.db_path),
                 },
-                "process_pool_workers": int(os.getenv("PIPELINE_PROCESS_POOL_WORKERS", "0")),
             },
+        }
+
+    @app.post("/api/cache/translation/clear")
+    def translation_cache_clear(reason: str = "manual") -> dict[str, Any]:
+        result = get_translation_engine().clear_cache(reason)
+        return {
+            "ok": True,
+            "cleared": result["cleared"],
+            "durable_cleared": result["durable_cleared"],
+            "reason": result["reason"],
         }
 
     @app.get("/api/logs/recent")
@@ -172,20 +193,21 @@ def register_routes(app: FastAPI) -> None:
         return {"ok": True, "log_file": str(current_log_file()), "lines": tail_log(lines)}
 
     @app.get("/debug/sessions")
-    def debug_sessions() -> dict[str, Any]:
+    async def debug_sessions() -> dict[str, Any]:
         return {"ok": True, "sessions": session_metrics_store.recent()}
 
     @app.get("/metrics")
-    def metrics() -> dict[str, Any]:
+    async def metrics() -> dict[str, Any]:
         ready = runtime_state.ready and runtime_state.model_ready and runtime_state.last_error is None
         return {
             "ok": True,
             "ready": ready,
             "sessions": session_metrics_store.recent(),
+            "translation_cache": _translation_cache_metrics(),
         }
 
     @app.get("/debug/session/{client_id}")
-    def debug_session(client_id: str, response: Response) -> dict[str, Any]:
+    async def debug_session(client_id: str, response: Response) -> dict[str, Any]:
         metrics = session_metrics_store.get(client_id)
         if metrics is None:
             response.status_code = 404
@@ -243,7 +265,20 @@ def register_routes(app: FastAPI) -> None:
             response.status_code = 400
             safe = map_exception(exc)
             return {"ok": False, "code": "invalid_glossary", "message": "Glossary rule is invalid.", "debug": safe.debug}
-        return {"ok": True, "rules": list_glossary_rules()}
+
+        try:
+            cache_result = get_translation_engine().refresh_glossary_version()
+        except Exception as exc:
+            response.status_code = 503
+            logger.exception("glossary_cache_invalidation_failed")
+            safe = map_exception(exc)
+            return {
+                "ok": False,
+                "code": "cache_invalidation_failed",
+                "message": "Glossary saved, but translation cache invalidation failed.",
+                "debug": safe.debug,
+            }
+        return {"ok": True, "rules": list_glossary_rules(), "cache": {"cleared": cache_result["cleared"]}}
 
     @app.get("/api/privacy")
     def privacy_get() -> dict[str, Any]:

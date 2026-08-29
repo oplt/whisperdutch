@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import statistics
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+METRIC_SAMPLE_LIMIT = 1000
 
 
 @dataclass
@@ -23,23 +25,35 @@ class SessionMetrics:
     translations_cancelled: int = 0
     max_queue_depth: int = 0
     reconnects: int = 0
-    audio_seconds: list[float] = field(default_factory=list)
-    asr_latency_ms: list[int] = field(default_factory=list)
-    mt_latency_ms: list[int] = field(default_factory=list)
-    total_latency_ms: list[int] = field(default_factory=list)
-    realtime_factors: list[float] = field(default_factory=list)
+    audio_seconds_total: float = 0.0
+    audio_seconds: deque[float] = field(default_factory=lambda: deque(maxlen=METRIC_SAMPLE_LIMIT))
+    asr_latency_ms: deque[int] = field(default_factory=lambda: deque(maxlen=METRIC_SAMPLE_LIMIT))
+    mt_latency_ms: deque[int] = field(default_factory=lambda: deque(maxlen=METRIC_SAMPLE_LIMIT))
+    total_latency_ms: deque[int] = field(default_factory=lambda: deque(maxlen=METRIC_SAMPLE_LIMIT))
+    realtime_factors: deque[float] = field(default_factory=lambda: deque(maxlen=METRIC_SAMPLE_LIMIT))
+    queue_delay_ms: deque[int] = field(default_factory=lambda: deque(maxlen=METRIC_SAMPLE_LIMIT))
 
     def touch(self) -> None:
         self.updated_at = time.time()
 
     def snapshot(self) -> dict[str, Any]:
         data = asdict(self)
+        for name in (
+            "audio_seconds",
+            "asr_latency_ms",
+            "mt_latency_ms",
+            "total_latency_ms",
+            "realtime_factors",
+            "queue_delay_ms",
+        ):
+            data[name] = list(data[name])
         data["summary"] = {
-            "audio_seconds_total": round(sum(self.audio_seconds), 3),
+            "audio_seconds_total": round(self.audio_seconds_total, 3),
             "asr_latency_ms": _summary(self.asr_latency_ms),
             "mt_latency_ms": _summary(self.mt_latency_ms),
             "total_latency_ms": _summary(self.total_latency_ms),
             "realtime_factor": _summary(self.realtime_factors),
+            "queue_delay_ms": _summary(self.queue_delay_ms),
         }
         return data
 
@@ -68,7 +82,9 @@ class SessionMetricsStore:
         return [metrics.snapshot() for metrics in reversed(self._sessions.values())]
 
 
-def _summary(values: list[int] | list[float]) -> dict[str, float | int | None]:
+def _summary(
+    values: list[int] | list[float] | deque[int] | deque[float],
+) -> dict[str, float | int | None]:
     if not values:
         return {"count": 0, "p50": None, "p95": None, "max": None}
     sorted_values = sorted(values)

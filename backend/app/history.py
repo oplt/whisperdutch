@@ -17,7 +17,8 @@ logger = get_logger("history")
 class SessionHistoryStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         default_path = Path(__file__).resolve().parents[1] / "logs" / "session-history.sqlite3"
-        self.db_path = Path(db_path or os.getenv("SESSION_HISTORY_DB", str(default_path)))
+        configured_path = db_path if db_path is not None else os.getenv("SESSION_HISTORY_DB", str(default_path))
+        self.db_path = Path(configured_path)
         self.enabled = _env_bool("SESSION_HISTORY_ENABLED", True)
         self._lock = threading.Lock()
         if self.enabled:

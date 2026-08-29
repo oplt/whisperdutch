@@ -59,65 +59,15 @@ def transcribe_partial(audio: np.ndarray, config: ClientConfig, prompt: str | No
     return result.text, {"latency_ms": latency_ms, "audio_seconds": audio_seconds, "quality": result.quality}
 
 
-def translate_one_sentence(sentence: str) -> str:
-    return get_translation_engine().translate(sentence)
-
-
-def translate_many_sentences(sentences: list[str]) -> list[str]:
-    return get_translation_engine().translate_many(sentences)
-
-
-def translate_sentences(
-    sentences: list[str],
-    config: ClientConfig,
-    asr_latency_ms: int,
-    audio_seconds: float,
-    fragment: str,
-) -> list[dict[str, Any]]:
-    if not sentences:
-        return []
-
-    translation_start = time.perf_counter()
-    translations = translate_many_sentences(sentences)
-    translation_latency_ms = int((time.perf_counter() - translation_start) * 1000)
-
-    results: list[dict[str, Any]] = []
-    for sentence, translation in zip(sentences, translations, strict=False):
-        subtitle_id = f"final-{time.time_ns()}"
-        results.append(
-            {
-                "type": "final",
-                "id": subtitle_id,
-                "source_lang": config.source_lang,
-                "target_lang": config.target_lang,
-                "mode": config.mode,
-                "dutch": sentence,
-                "translation": translation,
-                "asr_latency_ms": asr_latency_ms,
-                "translation_latency_ms": translation_latency_ms,
-                "latency_ms": asr_latency_ms + translation_latency_ms,
-                "audio_seconds": audio_seconds,
-                "asr_fragment": fragment,
-                "sentence_mode": True,
-            }
-        )
-    return results
-
-
-def process_audio_segment(audio: np.ndarray, config: ClientConfig, sentence_assembler: SentenceAssembler) -> list[dict[str, Any]]:
-    sentences, meta = transcribe_and_collect_sentences(audio, config, sentence_assembler, True)
-    return translate_sentences(
-        sentences=sentences,
-        config=config,
-        asr_latency_ms=int(meta.get("asr_latency_ms") or 0),
-        audio_seconds=float(meta.get("audio_seconds") or 0.0),
-        fragment=str(meta.get("fragment") or ""),
+def translate_many_sentences(sentences: list[str], config: ClientConfig | None = None) -> list[str]:
+    translator = get_translation_engine()
+    if config is None:
+        return translator.translate_many(sentences)
+    return translator.translate_many(
+        sentences,
+        source_language=config.source_lang,
+        target_language=config.target_lang,
     )
-
-
-def flush_sentences(config: ClientConfig, sentence_assembler: SentenceAssembler) -> list[dict[str, Any]]:
-    sentences = sentence_assembler.flush()
-    return translate_sentences(sentences, config, asr_latency_ms=0, audio_seconds=0.0, fragment="")
 
 
 def adapt_segmenter(segmenter: SpeechSegmenter, config: ClientConfig, realtime_factor: float) -> None:
@@ -130,7 +80,7 @@ def adapt_segmenter(segmenter: SpeechSegmenter, config: ClientConfig, realtime_f
     if realtime_factor > 1.0:
         segmenter.max_segment_seconds = max(min_segment, segmenter.max_segment_seconds * 0.85)
         segmenter.end_silence_seconds = max(min_silence, segmenter.end_silence_seconds * 0.90)
-        logger.info(
+        logger.debug(
             "adaptive_segmentation_tightened mode=%s realtime_factor=%.3f max_segment_seconds=%.2f end_silence_seconds=%.2f",
             config.mode,
             realtime_factor,

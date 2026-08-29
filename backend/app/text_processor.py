@@ -5,16 +5,39 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 DEFAULT_GLOSSARY: dict[str, str] = {
     # Intentionally empty by default.
     # Domain/entity corrections should be user-controlled via config/glossary.tsv.
 }
 
 CONNECTOR_ENDINGS = {
-    "en", "maar", "want", "omdat", "doordat", "terwijl", "dat", "als", "dus",
-    "of", "waarbij", "waardoor", "zodat", "wanneer", "toen", "dan", "ook",
-    "met", "voor", "van", "naar", "in", "op", "bij", "over", "onder", "tussen",
+    "en",
+    "maar",
+    "want",
+    "omdat",
+    "doordat",
+    "terwijl",
+    "dat",
+    "als",
+    "dus",
+    "of",
+    "waarbij",
+    "waardoor",
+    "zodat",
+    "wanneer",
+    "toen",
+    "dan",
+    "ook",
+    "met",
+    "voor",
+    "van",
+    "naar",
+    "in",
+    "op",
+    "bij",
+    "over",
+    "onder",
+    "tussen",
 }
 
 

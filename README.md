@@ -81,7 +81,20 @@ TRANSLATION_COMPUTE_TYPE=int8
 
 Session history is stored locally in SQLite at `backend/logs/session-history.sqlite3` by default. It includes subtitle text for export/review. Set `SESSION_HISTORY_ENABLED=0` if transcript text must not be persisted.
 
-Keep `PIPELINE_PROCESS_POOL_WORKERS=0` unless profiling proves new CPU-bound Python work is competing with the event loop. Current ASR/translation calls already run off the asyncio path, and extra processes would reload heavy models.
+Translation result caching is memory-only by default. To persist translated subtitle text across backend restarts, opt in explicitly:
+
+```bash
+TRANSLATION_CACHE_BACKEND=sqlite
+TRANSLATION_CACHE_DB=backend/logs/translation-cache.sqlite3
+TRANSLATION_CACHE_ITEMS=4096
+TRANSLATION_CACHE_TTL_SECONDS=0
+```
+
+The durable cache is separate from session history, bounded by item count, and pruned by optional TTL. Set `TRANSLATION_CACHE_BACKEND=memory` to guarantee no translation-cache text is written to disk.
+
+Runtime translation tokenizer/model loading is offline by default (`LOCAL_MODELS_ONLY=1`). Prepare the translation model once with `backend/scripts/prepare_translation_ct2.sh`; the live backend will then avoid network probes and retry delays. Set `LOCAL_MODELS_ONLY=0` only while intentionally downloading a missing translation model.
+
+Audio and translation queues are bounded independently. Partial subtitles may be dropped under load, while finalized audio is preserved by merging adjacent pending segments. `PIPELINE_QUEUE_MAX_SEGMENTS` and `TRANSLATION_QUEUE_MAX_ITEMS` control those bounds.
 
 ## Native Host
 
@@ -92,7 +105,7 @@ export DUTCH_SUBTITLE_EXTENSION_ID=<chrome-extension-id>
 bash native-host/install_linux.sh
 ```
 
-The popup uses native messaging to start `backend/run_gpu.sh`. Re-run install after the extension id changes.
+The live subtitle window uses native messaging to start `backend/run_gpu.sh`. Re-run install after the extension id changes.
 
 Native host commands:
 
@@ -107,8 +120,8 @@ Backend port defaults to `8000`. Set `DUTCH_SUBTITLE_BACKEND_PORT` or send `port
 1. Open `chrome://extensions`.
 2. Enable Developer mode.
 3. Load unpacked extension from `frontend-extension/`.
-4. Click the extension, start backend, open subtitle window.
-5. Start capture from a tab with Dutch audio.
+4. Open a tab with Dutch audio and click the extension icon.
+5. The subtitle window opens, starts the backend if needed, and begins capture automatically.
 
 ## Product Features
 

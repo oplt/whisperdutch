@@ -19,24 +19,21 @@ class TranscriptionResult:
     quality: dict[str, Any]
 
 
-def _torch_cuda_info() -> dict[str, Any]:
+def _cuda_info() -> dict[str, Any]:
     try:
-        import torch
+        import ctranslate2
 
-        available = bool(torch.cuda.is_available())
+        count = int(ctranslate2.get_cuda_device_count())
         return {
-            "torch_cuda_available": available,
-            "torch_cuda_device_count": int(torch.cuda.device_count()) if available else 0,
-            "torch_cuda_device_name": torch.cuda.get_device_name(0) if available else None,
-            "torch_version": torch.__version__,
-            "torch_cuda_version": getattr(torch.version, "cuda", None),
+            "cuda_available": count > 0,
+            "cuda_device_count": count,
+            "ctranslate2_version": ctranslate2.__version__,
         }
     except Exception as exc:
         return {
-            "torch_cuda_available": False,
-            "torch_cuda_device_count": 0,
-            "torch_cuda_device_name": None,
-            "torch_error": str(exc),
+            "cuda_available": False,
+            "cuda_device_count": 0,
+            "cuda_error": str(exc),
         }
 
 
@@ -44,7 +41,7 @@ def _auto_device() -> str:
     requested = os.getenv("ASR_DEVICE", "auto").strip().lower()
     if requested != "auto":
         return requested
-    return "cuda" if _torch_cuda_info().get("torch_cuda_available") else "cpu"
+    return "cuda" if _cuda_info().get("cuda_available") else "cpu"
 
 
 class TranscriptionEngine:
@@ -80,7 +77,7 @@ class TranscriptionEngine:
             "asr_device": self.device,
             "asr_compute_type": self.compute_type,
             "asr_cpu_threads": self.cpu_threads,
-            **_torch_cuda_info(),
+            **_cuda_info(),
         }
 
     def warmup(self) -> None:
@@ -105,7 +102,9 @@ class TranscriptionEngine:
         else:
             beam_size = int(os.getenv("BALANCED_ASR_BEAM_SIZE", os.getenv("ASR_BEAM_SIZE", "2")))
 
-        logger.debug("asr_transcribe_started samples=%s mode=%s beam_size=%s prompt_present=%s", audio_16k.size, mode, beam_size, bool(prompt))
+        logger.debug(
+            "asr_transcribe_started samples=%s mode=%s beam_size=%s prompt_present=%s", audio_16k.size, mode, beam_size, bool(prompt)
+        )
         segments, _info = self.model.transcribe(
             audio_16k,
             language=os.getenv("ASR_LANGUAGE", "nl"),
