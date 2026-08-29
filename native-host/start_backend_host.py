@@ -247,9 +247,9 @@ def start_backend(message: dict | None = None) -> dict:
         if is_backend_healthy(port, timeout=0.4):
             return {
                 "ok": True,
-                "status": "ready",
+                "status": "live",
                 "pid": process.pid,
-                "message": "Backend is ready.",
+                "message": "Backend process is live; models may still be loading.",
                 "log_file": str(log_path),
                 **backend_urls(port),
             }

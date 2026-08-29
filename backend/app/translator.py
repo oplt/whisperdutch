@@ -5,7 +5,7 @@ import json
 import os
 import time
 from collections import OrderedDict, deque
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -158,12 +158,15 @@ class TranslationEngine:
         self._cache_miss_lookup_latencies_ms: deque[float] = deque(maxlen=TRANSLATION_CACHE_SAMPLE_LIMIT)
         self._cache_miss_translation_latencies_ms: deque[float] = deque(maxlen=TRANSLATION_CACHE_SAMPLE_LIMIT)
         self.durable_cache: DurableTranslationCache | None = None
+        self._durable_executor: ThreadPoolExecutor | None = None
         if self.cache_backend == "sqlite" and self.max_cache_items > 0:
             self.durable_cache = DurableTranslationCache(
                 _translation_cache_db_path(),
                 max_items=self.max_cache_items,
                 ttl_seconds=self.cache_ttl_seconds,
             )
+            if self.durable_cache.enabled:
+                self._durable_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="translation-cache")
 
         requested_device = os.getenv("TRANSLATION_DEVICE", "auto").strip().lower()
         self.device = "cuda" if requested_device != "cpu" and _cuda_available() else "cpu"
@@ -230,22 +233,23 @@ class TranslationEngine:
         self.translator = None
 
     def info(self) -> dict[str, Any]:
-        with self._cache_lock:
-            cache_info = self._cache_info_locked()
-            return {
-                "translation_engine": self.engine,
-                "translation_model": self.model_name,
-                "translation_tokenizer": self.tokenizer_name,
-                "translation_device": self.device,
-                "translation_compute_type": self.compute_type,
-                "translation_beam_size": self.beam_size,
-                "translation_cache_items": cache_info["size"],
-                "translation_cache": cache_info,
-            }
+        cache_info = self.cache_info()
+        return {
+            "translation_engine": self.engine,
+            "translation_model": self.model_name,
+            "translation_tokenizer": self.tokenizer_name,
+            "translation_device": self.device,
+            "translation_compute_type": self.compute_type,
+            "translation_beam_size": self.beam_size,
+            "translation_cache_items": cache_info["size"],
+            "translation_cache": cache_info,
+        }
 
     def cache_info(self) -> dict[str, Any]:
         with self._cache_lock:
-            return self._cache_info_locked()
+            info = self._cache_info_locked()
+        info["durable"] = self._durable_info()
+        return info
 
     def _cache_info_locked(self) -> dict[str, Any]:
         total_lookups = self._cache_hits + self._cache_misses
@@ -273,49 +277,48 @@ class TranslationEngine:
                 "cache_hit_under_5ms": _under_threshold(self._cache_hit_latencies_ms, 5.0),
                 "cache_hit_samples": len(self._cache_hit_latencies_ms),
             },
-            "durable": self._durable_info_locked(),
         }
 
-    def _durable_info_locked(self) -> dict[str, Any]:
-        if self.durable_cache is None:
+    def _durable_info(self) -> dict[str, Any]:
+        with self._cache_lock:
+            durable_cache = self.durable_cache
+            backend = self.cache_backend
+            ttl_seconds = self.cache_ttl_seconds
+            hits = self._durable_hits
+            misses = self._durable_misses
+            read_failures = self._durable_read_failures
+            write_failures = self._durable_write_failures
+        if durable_cache is None:
             return {
-                "backend": self.cache_backend,
+                "backend": backend,
                 "enabled": False,
                 "path": None,
-                "ttl_seconds": self.cache_ttl_seconds,
-                "hits": self._durable_hits,
-                "misses": self._durable_misses,
-                "read_failures": self._durable_read_failures,
-                "write_failures": self._durable_write_failures,
+                "ttl_seconds": ttl_seconds,
+                "hits": hits,
+                "misses": misses,
+                "read_failures": read_failures,
+                "write_failures": write_failures,
                 "size": 0,
             }
-        info = self.durable_cache.info()
+        info = durable_cache.info()
         info.update(
             {
-                "engine_hits": self._durable_hits,
-                "engine_misses": self._durable_misses,
-                "read_failures": self._durable_read_failures,
-                "write_failures": self._durable_write_failures,
+                "engine_hits": hits,
+                "engine_misses": misses,
+                "read_failures": read_failures,
+                "write_failures": write_failures,
             }
         )
         return info
 
     def clear_cache(self, reason: str) -> dict[str, Any]:
         reason = reason.strip()[:120] or "unspecified"
+        stats_before = self.cache_info()
         with self._cache_lock:
-            return self._clear_cache_locked(reason)
-
-    def _clear_cache_locked(self, reason: str) -> dict[str, Any]:
-        stats_before = self._cache_info_locked()
-        cleared = len(self.cache)
-        self.cache.clear()
-        self._cache_generation += 1
-        durable_cleared = 0
-        if self.durable_cache is not None and self.durable_cache.enabled:
-            try:
-                durable_cleared = self.durable_cache.clear()
-            except Exception:
-                logger.exception("durable_translation_cache_clear_failed")
+            cleared = len(self.cache)
+            self.cache.clear()
+            self._cache_generation += 1
+        durable_cleared = self._clear_durable_cache()
         logger.info(
             "translation_cache_cleared reason=%s cleared=%s durable_cleared=%s stats_before=%s",
             reason,
@@ -330,18 +333,30 @@ class TranslationEngine:
             "stats_before": stats_before,
         }
 
+    def _clear_durable_cache(self) -> int:
+        durable_cache = self.durable_cache
+        if durable_cache is None or not durable_cache.enabled:
+            return 0
+        try:
+            if self._durable_executor is None:
+                return durable_cache.clear()
+            return self._durable_executor.submit(durable_cache.clear).result(timeout=5.0)
+        except Exception:
+            logger.exception("durable_translation_cache_clear_failed")
+            return 0
+
     def refresh_glossary_version(self, reason: str = "glossary_updated") -> dict[str, Any]:
         new_version = _glossary_cache_version()
         with self._cache_lock:
             previous_version = self.glossary_version
             self.glossary_version = new_version
-            result = self._clear_cache_locked(reason)
-            result.update(
-                {
-                    "previous_glossary_version": previous_version,
-                    "glossary_version": self.glossary_version,
-                }
-            )
+        result = self.clear_cache(reason)
+        result.update(
+            {
+                "previous_glossary_version": previous_version,
+                "glossary_version": self.glossary_version,
+            }
+        )
         logger.info(
             "translation_cache_glossary_version_refreshed changed=%s",
             previous_version != new_version,
@@ -415,10 +430,10 @@ class TranslationEngine:
                     results.append("")
                     continue
                 lookup_started = time.perf_counter()
-                cached = self._cache_get_locked(key)
+                cached = self._memory_cache_get_locked(key)
                 lookup_latency_ms = (time.perf_counter() - lookup_started) * 1000
-                self._record_cache_lookup_locked(cached is not None, lookup_latency_ms)
                 if cached is not None:
+                    self._record_cache_lookup_locked(True, lookup_latency_ms)
                     results.append(cached)
                     continue
                 results.append(None)
@@ -428,9 +443,12 @@ class TranslationEngine:
                     self._inflight[key] = inflight
                     owners.append((index, key, inflight))
                 else:
+                    self._cache_misses += 1
+                    self._record_cache_lookup_locked(False, lookup_latency_ms)
                     self._single_flight_waits += 1
                     waiters.append((index, inflight.future))
 
+        owners = self._resolve_durable_owners(owners, results)
         if owners:
             source_texts = [key.source_text for _, key, _ in owners]
             logger.debug(
@@ -455,17 +473,21 @@ class TranslationEngine:
                 raise
 
             translation_latency_ms = (time.perf_counter() - translation_started) * 1000
+            durable_writes: list[tuple[TranslationCacheKey, str, int]] = []
             with self._cache_lock:
                 self._cache_miss_translation_latencies_ms.extend([translation_latency_ms] * len(owners))
                 for offset, (index, key, inflight) in enumerate(owners):
                     translated_text = str(translated[offset] or "") if offset < len(translated) else ""
                     if self._cache_generation == inflight.generation and offset < len(translated):
-                        self._cache_set_locked(key, translated_text)
+                        self._cache_set_locked(key, translated_text, persist=False)
+                        durable_writes.append((key, translated_text, inflight.generation))
                     results[index] = translated_text
                     if not inflight.future.done():
                         inflight.future.set_result(translated_text)
                     if self._inflight.get(key) is inflight:
                         del self._inflight[key]
+            for key, translated_text, owner_generation in durable_writes:
+                self._persist_durable(key, translated_text, owner_generation)
             logger.debug("translation_batch_completed count=%s", len(source_texts))
 
         for index, future in waiters:
@@ -482,11 +504,10 @@ class TranslationEngine:
 
     def _cache_get(self, key: TranslationCacheKey) -> str | None:
         with self._cache_lock:
-            return self._cache_get_locked(key)
+            return self._memory_cache_get_locked(key)
 
-    def _cache_get_locked(self, key: TranslationCacheKey) -> str | None:
+    def _memory_cache_get_locked(self, key: TranslationCacheKey) -> str | None:
         if self.max_cache_items <= 0:
-            self._cache_misses += 1
             return None
         cached = self.cache.get(key)
         if cached is not None:
@@ -495,23 +516,48 @@ class TranslationEngine:
             logger.debug("translation_cache_hit chars=%s", len(key.source_text))
             return cached
 
-        if self.durable_cache is not None and self.durable_cache.enabled:
-            try:
-                durable = self.durable_cache.get(_cache_key_id(key))
-            except Exception:
-                self._durable_read_failures += 1
-                logger.exception("durable_translation_cache_read_failed")
-            else:
-                if durable is not None:
-                    self._cache_hits += 1
-                    self._durable_hits += 1
-                    self._cache_set_locked(key, durable, persist=False)
-                    logger.debug("translation_cache_durable_hit chars=%s", len(key.source_text))
-                    return durable
-                self._durable_misses += 1
-
-        self._cache_misses += 1
         return None
+
+    def _resolve_durable_owners(
+        self,
+        owners: list[tuple[int, TranslationCacheKey, _InFlightTranslation]],
+        results: list[str | None],
+    ) -> list[tuple[int, TranslationCacheKey, _InFlightTranslation]]:
+        remaining: list[tuple[int, TranslationCacheKey, _InFlightTranslation]] = []
+        durable_cache = self.durable_cache
+        for index, key, inflight in owners:
+            lookup_started = time.perf_counter()
+            durable: str | None = None
+            failed = False
+            if durable_cache is not None and durable_cache.enabled:
+                try:
+                    durable = durable_cache.get(_cache_key_id(key))
+                except Exception:
+                    failed = True
+                    logger.exception("durable_translation_cache_read_failed")
+            lookup_latency_ms = (time.perf_counter() - lookup_started) * 1000
+            with self._cache_lock:
+                if failed:
+                    self._durable_read_failures += 1
+                if durable is None:
+                    self._cache_misses += 1
+                    if durable_cache is not None and durable_cache.enabled and not failed:
+                        self._durable_misses += 1
+                    self._record_cache_lookup_locked(False, lookup_latency_ms)
+                    remaining.append((index, key, inflight))
+                    continue
+                self._cache_hits += 1
+                self._durable_hits += 1
+                self._record_cache_lookup_locked(True, lookup_latency_ms)
+                if self._cache_generation == inflight.generation:
+                    self._cache_set_locked(key, durable, persist=False)
+                results[index] = durable
+                if not inflight.future.done():
+                    inflight.future.set_result(durable)
+                if self._inflight.get(key) is inflight:
+                    del self._inflight[key]
+                logger.debug("translation_cache_durable_hit chars=%s", len(key.source_text))
+        return remaining
 
     def _cache_set(self, key: TranslationCacheKey, translated: str) -> None:
         with self._cache_lock:
@@ -527,17 +573,31 @@ class TranslationEngine:
             evicted, _ = self.cache.popitem(last=False)
             self._cache_evictions += 1
             logger.debug("translation_cache_evicted chars=%s", len(evicted.source_text))
-        if persist and self.durable_cache is not None and self.durable_cache.enabled:
+        if persist:
+            self._persist_durable(key, translated, self._cache_generation)
+
+    def _persist_durable(self, key: TranslationCacheKey, translated: str, generation: int) -> None:
+        durable_cache = self.durable_cache
+        if durable_cache is None or not durable_cache.enabled:
+            return
+        args = (_cache_key_id(key), key.source_text, translated, asdict(key))
+
+        def write() -> None:
             try:
-                self.durable_cache.set(
-                    _cache_key_id(key),
-                    key.source_text,
-                    translated,
-                    asdict(key),
-                )
+                durable_cache.set(*args)
             except Exception:
-                self._durable_write_failures += 1
+                with self._cache_lock:
+                    self._durable_write_failures += 1
                 logger.exception("durable_translation_cache_write_failed")
+
+        with self._cache_lock:
+            if generation != self._cache_generation:
+                return
+            executor = self._durable_executor
+        if executor is None:
+            write()
+        else:
+            executor.submit(write)
 
     def _translate_ctranslate2_many(self, texts: list[str]) -> list[str]:
         if not texts:

@@ -8,283 +8,156 @@
 </head>
 <body>
   <main class="app-shell" aria-labelledby="appTitle">
-    <header class="app-header">
-      <div>
-        <h1 id="appTitle">Live Dutch Subtitles</h1>
-        <p>Current subtitle and transcript history</p>
+    <header class="topbar">
+      <div id="statusGroup" class="status" data-state="idle" aria-live="polite" aria-atomic="true">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="statusText">Ready</span>
+        <span id="latency" class="latency" hidden></span>
       </div>
+      <h1 id="appTitle" class="sr-only">Live Dutch Subtitles</h1>
+      <button id="settingsBtn" class="text-button" type="button">Settings</button>
     </header>
 
-    <nav class="app-tabs" role="tablist" aria-label="Subtitle workspace">
-      <button id="subtitlesTab" class="app-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="subtitlesPanel" tabindex="0">Subtitles</button>
-      <button id="settingsTab" class="app-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel" tabindex="-1">Settings</button>
-    </nav>
-
-    <section id="settingsPanel" class="tab-panel settings-view" role="tabpanel" aria-labelledby="settingsTab" hidden>
-      <header class="settings-view-header">
-        <div>
-          <h2>Settings</h2>
-          <p>Connection, translation, audio, appearance, and advanced controls.</p>
-        </div>
-      </header>
-      <div class="settings-body">
-        <section class="settings-section" aria-labelledby="connectionTitle">
-          <div class="section-heading">
-            <h2 id="connectionTitle">Connection</h2>
-          </div>
-          <label class="field field-wide" for="backendUrl">
-            <span>WebSocket URL</span>
-            <input id="backendUrl" class="text-input" value="ws://127.0.0.1:8000/ws/subtitles" autocomplete="off" spellcheck="false" />
-          </label>
-          <fieldset class="device-field field-wide" aria-describedby="deviceHint">
-            <legend>ASR device</legend>
-            <div class="radio-group">
-              <label class="radio-control" for="asrDeviceCpu">
-                <input id="asrDeviceCpu" name="asrDevice" type="radio" value="cpu" checked />
-                <span>CPU</span>
-              </label>
-              <label class="radio-control" for="asrDeviceCuda">
-                <input id="asrDeviceCuda" name="asrDevice" type="radio" value="cuda" />
-                <span>GPU (NVIDIA CUDA)</span>
-              </label>
-            </div>
-            <p id="deviceHint" class="diagnostic-text">CPU is the safe default. Restart the backend after changing this setting.</p>
-          </fieldset>
-        </section>
-
-        <section class="settings-section" aria-labelledby="translationTitle">
-          <div class="section-heading">
-            <h2 id="translationTitle">Translation</h2>
-          </div>
-          <div class="field-grid">
-            <label class="field" for="targetLang">
-              <span>Target language</span>
-              <select id="targetLang" class="select-input" title="Only English is available with the installed model">
-                <option value="en" selected>English</option>
-              </select>
-            </label>
-            <label class="field" for="qualityMode">
-              <span>Mode</span>
-              <select id="qualityMode" class="select-input">
-                <option value="fast">Low latency</option>
-                <option value="balanced" selected>Balanced</option>
-                <option value="quality">High accuracy</option>
-              </select>
-            </label>
-            <label class="field" for="displayMode">
-              <span>Display mode</span>
-              <select id="displayMode" class="select-input">
-                <option value="current">Current only</option>
-                <option value="two-line">Two-line overlay</option>
-                <option value="history" selected>History below</option>
-                <option value="compact">Compact transcript</option>
-              </select>
-            </label>
-          </div>
-          <label class="field field-wide" for="contextPrompt">
-            <span>Context hint</span>
-            <input id="contextPrompt" class="text-input" maxlength="600" placeholder="Names, topic, jargon" />
-          </label>
-        </section>
-
-        <section class="settings-section" aria-labelledby="audioTitle">
-          <div class="section-heading">
-            <h2 id="audioTitle">Audio &amp; appearance</h2>
-          </div>
-          <label class="field" for="audioSource">
-            <span>Audio source</span>
-            <select id="audioSource" class="select-input">
-              <option value="tab" selected>Current tab audio</option>
-            </select>
-          </label>
-          <label class="field" for="monitorVolume">
-            <span>Monitor volume</span>
-            <input id="monitorVolume" class="slider-input" type="range" min="0" max="1" step="0.05" value="1" />
-          </label>
-          <div class="toggle-row">
-            <label class="toggle-control" for="muteMonitor">
-              <input id="muteMonitor" type="checkbox" />
-              <span>Mute monitor</span>
-            </label>
-            <label class="toggle-control" for="transcriptLogging">
-              <input id="transcriptLogging" type="checkbox" />
-              <span>Log transcript text</span>
-            </label>
-          </div>
-          <div class="field-grid compact">
-            <label class="field" for="dutchFontSize">
-              <span>Dutch font</span>
-              <input id="dutchFontSize" class="text-input" type="number" min="14" max="96" step="1" value="48" />
-            </label>
-            <label class="field" for="translationFontSize">
-              <span>Translation font</span>
-              <input id="translationFontSize" class="text-input" type="number" min="14" max="96" step="1" value="42" />
-            </label>
-          </div>
-        </section>
-
-        <section class="status-badges" aria-label="Live status">
-          <div class="status-badge" data-state="idle"><span>Connected</span><strong id="connectedBadge">Idle</strong></div>
-          <div class="status-badge" data-state="idle"><span>Capturing audio</span><strong id="capturingBadge">No</strong></div>
-          <div class="status-badge"><span>Total latency</span><strong id="latency">-</strong></div>
-          <div class="status-badge"><span>ASR latency</span><strong id="asrLatency">-</strong></div>
-          <div class="status-badge"><span>Translation latency</span><strong id="translationLatency">-</strong></div>
-          <div class="status-badge" data-state="idle"><span>Reconnect</span><strong id="retryStatus">Ready</strong></div>
-          <div class="status-badge"><span>Privacy</span><strong id="privacyStatus">Logs hidden</strong></div>
-        </section>
-
-        <details class="advanced-panel">
-          <summary>Advanced settings</summary>
-          <div class="advanced-content">
-            <button id="openGlossaryBtn" class="action-button" type="button">Edit glossary</button>
-            <div class="session-tools" aria-label="Session management">
-              <label class="field" for="sessionName">
-                <span>Session name</span>
-                <input id="sessionName" class="text-input" value="Untitled session" />
-              </label>
-              <label class="field" for="sessionSelect">
-                <span>Saved sessions</span>
-                <select id="sessionSelect" class="select-input"></select>
-              </label>
-              <div class="action-row">
-                <button id="newSessionBtn" class="action-button" type="button">New</button>
-                <button id="renameSessionBtn" class="action-button" type="button">Rename</button>
-                <button id="saveSessionBtn" class="action-button" type="button">Save</button>
-                <button id="restoreSessionBtn" class="action-button" type="button">Restore</button>
-                <button id="clearSessionBtn" class="action-button" type="button">Clear</button>
-              </div>
-              <div class="action-row" aria-label="Export transcript">
-                <button id="exportTxtBtn" class="action-button" type="button">Export TXT</button>
-                <button id="exportVttBtn" class="action-button" type="button">Export VTT</button>
-                <button id="exportSrtBtn" class="action-button" type="button">Export SRT</button>
-              </div>
-            </div>
-            <div class="privacy-tools" aria-label="Privacy controls">
-              <label class="toggle-control" for="retainTranscript">
-                <input id="retainTranscript" type="checkbox" checked />
-                <span>Keep transcript in this window</span>
-              </label>
-              <label class="field" for="autoDeleteMinutes">
-                <span>Auto-delete after minutes</span>
-                <input id="autoDeleteMinutes" class="text-input" type="number" min="0" max="1440" step="5" value="0" />
-              </label>
-              <p class="diagnostic-text">Backend history retention uses server settings. This window can only clear local transcript state.</p>
-            </div>
-            <div class="unsupported-tools" aria-label="Backend-gated features">
-              <button class="action-button" type="button" disabled>Speaker diarization unavailable</button>
-              <button class="action-button" type="button" disabled>Rename speakers requires backend labels</button>
-              <button class="action-button" type="button" disabled>Numeric confidence requires backend scores</button>
-            </div>
-            <details id="diagnosticLogsDrawer" class="logs-drawer">
-              <summary class="logs-title">
-                <span>Diagnostics log</span>
-                <span class="history-summary-right">
-                  <button id="refreshLogsBtn" class="small-button" type="button">Refresh backend log</button>
-                </span>
-              </summary>
-              <pre id="frontendLogs" class="frontend-logs" aria-live="polite"></pre>
-            </details>
-          </div>
-        </details>
-      </div>
+    <section class="subtitle-stage" aria-label="Current subtitle">
+      <p id="currentDutch" class="current-dutch" lang="nl">Listening for Dutch speech…</p>
+      <p id="currentTranslation" class="current-translation" lang="en">English translation will appear here.</p>
+      <div class="level-track" aria-hidden="true"><span id="inputLevelBar"></span></div>
     </section>
 
-    <section id="subtitlesPanel" class="tab-panel subtitles-view" role="tabpanel" aria-labelledby="subtitlesTab">
-      <section id="backendToolbar" class="backend-toolbar" data-state="starting" aria-labelledby="backendServiceLabel">
-        <div class="backend-toolbar-summary" aria-live="polite">
-          <span class="status-dot" aria-hidden="true"></span>
-          <div>
-            <span class="backend-kicker">Translation service</span>
-            <strong id="backendServiceLabel">Connecting</strong>
-            <p id="backendServiceDetail">Checking the local backend and translation models</p>
-          </div>
-        </div>
-        <div class="backend-toolbar-actions" aria-label="Backend controls">
-          <button id="refreshBackendStatusBtn" class="action-button small" type="button">Refresh</button>
-          <button id="restartBackendBtn" class="action-button small" type="button">Restart backend</button>
-          <button id="stopBackendBtn" class="action-button small" type="button">Stop backend</button>
-        </div>
-        <details id="backendDiagnostics" class="backend-diagnostics">
-          <summary>Diagnostics</summary>
-          <dl class="diagnostic-list backend-diagnostic-list">
-            <div><dt>Native host</dt><dd id="diagnosticNative">Not checked</dd></div>
-            <div><dt>Backend process</dt><dd id="diagnosticBackend">Checking...</dd></div>
-            <div><dt>Models</dt><dd id="diagnosticModels">Checking...</dd></div>
-            <div><dt>Tab audio permission</dt><dd id="diagnosticTabAudio">Selected tab available</dd></div>
-          </dl>
-          <p id="backendDiagnosticMessage" class="diagnostic-message" hidden></p>
-          <button id="openBackendLogsBtn" class="popup-text-button" type="button">View logs</button>
-        </details>
-      </section>
-      <div class="subtitles-layout">
-        <aside class="subtitle-controls" aria-labelledby="captureTitle">
-          <div class="subtitle-controls-heading">
-            <h2 id="captureTitle">Capture</h2>
-            <span id="status" class="section-state">Idle</span>
-          </div>
-          <div class="capture-actions">
-            <button id="startBtn" class="action-button primary" type="button">Start capture</button>
-            <button id="pauseBtn" class="action-button" type="button" disabled>Pause</button>
-            <button id="stopBtn" class="action-button" type="button" disabled>Stop</button>
-            <button id="reconnectBtn" class="action-button" type="button">Reconnect</button>
-          </div>
-          <div class="capture-status">
-            <span>Audio</span>
-            <strong id="audioStatus">Not capturing</strong>
-          </div>
-          <div class="level-meter" aria-label="Input level">
-            <span id="inputLevelBar"></span>
-          </div>
-        </aside>
+    <div class="primary-actions" aria-label="Capture controls">
+      <button id="startBtn" class="button primary" type="button">Start listening</button>
+      <button id="pauseBtn" class="button" type="button" hidden>Pause</button>
+      <button id="stopBtn" class="button quiet" type="button" hidden>Stop</button>
+      <button id="retryBtn" class="button primary" type="button" hidden>Retry</button>
+    </div>
 
-        <section class="workspace-grid" aria-label="Subtitle workspace">
-          <section class="panel current-panel" aria-labelledby="currentTitle">
-            <div class="panel-header">
-              <div>
-                <h2 id="currentTitle">Current subtitle</h2>
-                <p>Newest subtitles appear first</p>
-              </div>
-              <span id="qualityBadge" class="quality-badge good">Quality: waiting</span>
-            </div>
-            <div class="subtitle-column-headings">
-              <h3>Captured subtitles</h3>
-              <h3>English translation</h3>
-            </div>
-            <div id="subtitleFeed" class="subtitle-feed" aria-label="Subtitle transcript, newest first" aria-live="polite">
-              <article id="currentSubtitle" class="current-subtitle empty">
-                <div class="placeholder">Waiting for Dutch speech...</div>
-              </article>
-              <div id="historySubtitles" class="history-subtitles" aria-label="Earlier subtitles"></div>
-            </div>
-          </section>
-        </section>
-      </div>
-    </section>
+    <details class="history-panel">
+      <summary>
+        <span>Recent subtitles</span>
+        <span id="historyCount" class="summary-meta">Empty</span>
+      </summary>
+      <div id="historySubtitles" class="history-list" aria-label="Recent subtitle history"></div>
+    </details>
+
+    <p id="subtitleAnnouncement" class="sr-only" aria-live="polite" aria-atomic="true"></p>
   </main>
 
-  <dialog id="glossaryDialog" class="glossary-dialog" aria-labelledby="glossaryTitle">
+  <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle">
     <form method="dialog" class="dialog-shell">
       <header class="dialog-header">
         <div>
-          <h2 id="glossaryTitle">Glossary</h2>
-          <p>Session corrections applied before translation</p>
+          <p class="eyebrow">Live subtitle preferences</p>
+          <h2 id="settingsTitle">Settings</h2>
         </div>
-        <button class="icon-button" value="close" aria-label="Close glossary" type="submit">&times;</button>
+        <button class="icon-button" value="close" aria-label="Close settings" type="submit">×</button>
       </header>
-      <label class="field field-wide" for="glossarySearch">
-        <span>Search rules</span>
-        <input id="glossarySearch" class="text-input" placeholder="Filter Dutch regex or replacement" />
-      </label>
-      <div class="glossary-grid">
-        <label class="field" for="glossaryPattern">
-          <span>Dutch regex</span>
-          <input id="glossaryPattern" class="text-input" placeholder="Ajax" />
-        </label>
-        <label class="field" for="glossaryReplacement">
-          <span>Replacement</span>
-          <input id="glossaryReplacement" class="text-input" placeholder="Ajax Amsterdam" />
-        </label>
-        <button id="addGlossaryBtn" class="action-button primary" type="button">Add</button>
+
+      <details class="settings-group" open>
+        <summary>General</summary>
+        <div class="settings-content">
+          <label class="field" for="monitorVolume">
+            <span>Tab audio volume</span>
+            <input id="monitorVolume" type="range" min="0" max="1" step="0.05" value="1" />
+          </label>
+          <label class="check-control" for="muteMonitor">
+            <input id="muteMonitor" type="checkbox" />
+            <span>Mute tab audio while subtitles continue</span>
+          </label>
+        </div>
+      </details>
+
+      <details class="settings-group">
+        <summary>Appearance</summary>
+        <div class="settings-content two-columns">
+          <label class="field" for="dutchFontSize"><span>Dutch text size</span><input id="dutchFontSize" type="number" min="16" max="96" step="1" value="48" /></label>
+          <label class="field" for="translationFontSize"><span>English text size</span><input id="translationFontSize" type="number" min="16" max="96" step="1" value="38" /></label>
+        </div>
+      </details>
+
+      <details class="settings-group">
+        <summary>Advanced</summary>
+        <div class="settings-content advanced-content">
+          <label class="field" for="qualityMode">
+            <span>Processing mode</span>
+            <select id="qualityMode">
+              <option value="fast">Low latency</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="quality">High accuracy</option>
+            </select>
+          </label>
+
+          <fieldset class="plain-fieldset">
+            <legend>ASR device</legend>
+            <div class="choice-row">
+              <label class="check-control"><input name="asrDevice" type="radio" value="cpu" checked /> CPU</label>
+              <label class="check-control"><input name="asrDevice" type="radio" value="cuda" /> NVIDIA GPU</label>
+            </div>
+          </fieldset>
+
+          <label class="field" for="contextPrompt"><span>Context hint</span><input id="contextPrompt" maxlength="600" placeholder="Names, topic, or specialist terms" /></label>
+
+          <div class="setting-block">
+            <div><strong>Glossary</strong><p>Apply local corrections before translation.</p></div>
+            <button id="openGlossaryBtn" class="button small" type="button">Edit glossary</button>
+          </div>
+
+          <label class="field" for="backendUrl"><span>WebSocket URL</span><input id="backendUrl" autocomplete="off" spellcheck="false" /></label>
+
+          <section class="advanced-section" aria-labelledby="backendHeading">
+            <h3 id="backendHeading">Backend diagnostics</h3>
+            <div class="button-row">
+              <button id="refreshDiagnosticsBtn" class="button small" type="button">Check status</button>
+              <button id="restartBackendBtn" class="button small" type="button">Restart backend</button>
+              <button id="stopBackendBtn" class="button small quiet" type="button">Stop backend</button>
+            </div>
+            <pre id="diagnosticsOutput" class="diagnostic-output">Not checked</pre>
+            <details class="nested-details">
+              <summary>Backend logs</summary>
+              <button id="refreshLogsBtn" class="button small" type="button">Refresh log</button>
+              <pre id="logsOutput" class="logs-output">Logs load only when requested.</pre>
+            </details>
+          </section>
+
+          <section class="advanced-section" aria-labelledby="privacyHeading">
+            <h3 id="privacyHeading">Privacy and debug</h3>
+            <label class="check-control" for="transcriptLogging"><input id="transcriptLogging" type="checkbox" /><span>Include transcript text in backend logs</span></label>
+            <p class="help-text">Off by default. Live transcript data otherwise stays in memory until you explicitly save it.</p>
+          </section>
+
+          <section class="advanced-section" aria-labelledby="sessionHeading">
+            <h3 id="sessionHeading">Transcript session</h3>
+            <div class="two-columns">
+              <label class="field" for="sessionName"><span>Session name</span><input id="sessionName" value="Untitled session" /></label>
+              <label class="field" for="sessionSelect"><span>Saved sessions</span><select id="sessionSelect"></select></label>
+            </div>
+            <div class="button-row">
+              <button id="newSessionBtn" class="button small" type="button">New</button>
+              <button id="saveSessionBtn" class="button small" type="button">Save</button>
+              <button id="restoreSessionBtn" class="button small" type="button">Restore</button>
+              <button id="clearSessionBtn" class="button small quiet" type="button">Clear</button>
+            </div>
+            <div class="button-row" aria-label="Export transcript">
+              <button id="exportTXTBtn" class="button small" type="button">Export TXT</button>
+              <button id="exportVTTBtn" class="button small" type="button">Export VTT</button>
+              <button id="exportSRTBtn" class="button small" type="button">Export SRT</button>
+            </div>
+          </section>
+        </div>
+      </details>
+    </form>
+  </dialog>
+
+  <dialog id="glossaryDialog" class="settings-dialog compact-dialog" aria-labelledby="glossaryTitle">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-header">
+        <div><p class="eyebrow">Local corrections</p><h2 id="glossaryTitle">Glossary</h2></div>
+        <button class="icon-button" value="close" aria-label="Close glossary" type="submit">×</button>
+      </header>
+      <label class="field" for="glossarySearch"><span>Search rules</span><input id="glossarySearch" placeholder="Search glossary" /></label>
+      <div class="glossary-editor">
+        <label class="field" for="glossaryPattern"><span>Dutch pattern</span><input id="glossaryPattern" placeholder="Ajax" /></label>
+        <label class="field" for="glossaryReplacement"><span>Replacement</span><input id="glossaryReplacement" placeholder="Ajax Amsterdam" /></label>
+        <button id="addGlossaryBtn" class="button primary small" type="button">Add rule</button>
       </div>
       <div id="glossaryList" class="glossary-list"></div>
     </form>
@@ -292,8 +165,16 @@
 
   <script src="backend-client.js"></script>
   <script src="subtitle-renderer.js"></script>
-  <script src="ui-components.js"></script>
-  <script src="settings.js"></script>
-  <script src="subtitle.js"></script>
+  <script src="app/state.js"></script>
+  <script src="app/logger.js"></script>
+  <script src="app/backend-service.js"></script>
+  <script src="app/websocket-client.js"></script>
+  <script src="app/capture-controller.js"></script>
+  <script src="app/transcript-store.js"></script>
+  <script src="app/subtitle-view.js"></script>
+  <script src="app/settings-view.js"></script>
+  <script src="app/glossary.js"></script>
+  <script src="app/export.js"></script>
+  <script src="app/main.js"></script>
 </body>
 </html>

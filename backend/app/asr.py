@@ -19,6 +19,15 @@ class TranscriptionResult:
     quality: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ASRDecodeConfig:
+    language: str
+    beam_size: int
+    no_speech_threshold: float
+    compression_ratio_threshold: float
+    condition_on_previous_text: bool
+
+
 def _cuda_info() -> dict[str, Any]:
     try:
         import ctranslate2
@@ -55,6 +64,7 @@ class TranscriptionEngine:
             "float16" if self.device == "cuda" else "int8",
         )
         self.cpu_threads = int(os.getenv("ASR_CPU_THREADS", "4"))
+        self.decode_configs = self._build_decode_configs()
 
         logger.info(
             "asr_model_loading model=%s device=%s compute_type=%s cpu_threads=%s",
@@ -95,28 +105,27 @@ class TranscriptionEngine:
             return TranscriptionResult("", {"level": "empty", "reason": "too_short"})
 
         mode = (mode or "balanced").lower()
-        if mode == "fast":
-            beam_size = int(os.getenv("FAST_ASR_BEAM_SIZE", "1"))
-        elif mode == "quality":
-            beam_size = int(os.getenv("QUALITY_ASR_BEAM_SIZE", "3"))
-        else:
-            beam_size = int(os.getenv("BALANCED_ASR_BEAM_SIZE", os.getenv("ASR_BEAM_SIZE", "2")))
+        decode = self.decode_configs.get(mode, self.decode_configs["balanced"])
 
         logger.debug(
-            "asr_transcribe_started samples=%s mode=%s beam_size=%s prompt_present=%s", audio_16k.size, mode, beam_size, bool(prompt)
+            "asr_transcribe_started samples=%s mode=%s beam_size=%s prompt_present=%s",
+            audio_16k.size,
+            mode,
+            decode.beam_size,
+            bool(prompt),
         )
         segments, _info = self.model.transcribe(
             audio_16k,
-            language=os.getenv("ASR_LANGUAGE", "nl"),
+            language=decode.language,
             task="transcribe",
-            beam_size=beam_size,
+            beam_size=decode.beam_size,
             best_of=1,
             temperature=0.0,
             vad_filter=False,
-            condition_on_previous_text=os.getenv("ASR_CONDITION_ON_PREVIOUS_TEXT", "0") == "1",
+            condition_on_previous_text=decode.condition_on_previous_text,
             initial_prompt=prompt,
-            no_speech_threshold=float(os.getenv("ASR_NO_SPEECH_THRESHOLD", "0.6")),
-            compression_ratio_threshold=float(os.getenv("ASR_COMPRESSION_RATIO_THRESHOLD", "2.4")),
+            no_speech_threshold=decode.no_speech_threshold,
+            compression_ratio_threshold=decode.compression_ratio_threshold,
             without_timestamps=True,
         )
         segment_list = list(segments)
@@ -126,10 +135,48 @@ class TranscriptionEngine:
         logger.debug("asr_transcribe_completed chars=%s", len(cleaned))
         return TranscriptionResult(cleaned, quality)
 
+    def _build_decode_configs(self) -> dict[str, ASRDecodeConfig]:
+        language = os.getenv("ASR_LANGUAGE", "nl").strip().lower()
+        if not language:
+            raise ValueError("ASR_LANGUAGE must not be empty")
+        no_speech = _bounded_env_float("ASR_NO_SPEECH_THRESHOLD", 0.6, minimum=0.0, maximum=1.0)
+        compression = _bounded_env_float("ASR_COMPRESSION_RATIO_THRESHOLD", 2.4, minimum=0.01)
+        previous_text = os.getenv("ASR_CONDITION_ON_PREVIOUS_TEXT", "0").strip().lower() in {"1", "true", "yes", "on"}
+        beams = {
+            "fast": _positive_env_int("FAST_ASR_BEAM_SIZE", 1),
+            "balanced": _positive_env_int("BALANCED_ASR_BEAM_SIZE", _positive_env_int("ASR_BEAM_SIZE", 2)),
+            "quality": _positive_env_int("QUALITY_ASR_BEAM_SIZE", 3),
+        }
+        return {
+            mode: ASRDecodeConfig(language, beam, no_speech, compression, previous_text)
+            for mode, beam in beams.items()
+        }
+
 
 def _clean_text(text: str) -> str:
     text = " ".join(text.replace("\n", " ").split())
     return text.strip()
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _bounded_env_float(name: str, default: float, *, minimum: float, maximum: float | None = None) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if value < minimum or (maximum is not None and value > maximum):
+        suffix = f" and at most {maximum}" if maximum is not None else ""
+        raise ValueError(f"{name} must be at least {minimum}{suffix}")
+    return value
 
 
 def _quality_from_segments(segments: list[Any]) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -45,8 +46,8 @@ class SpeechSegmenter:
     max_segment_seconds: float = field(default_factory=lambda: _env_float("MAX_SEGMENT_SECONDS", 4.5))
     pre_roll_seconds: float = field(default_factory=lambda: _env_float("PRE_ROLL_SECONDS", 0.12))
 
-    _speech: list[np.ndarray] = field(default_factory=list)
-    _pre_roll: list[np.ndarray] = field(default_factory=list)
+    _pre_roll: deque[np.ndarray] = field(default_factory=deque)
+    _speech_buffer: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
     _speech_samples: int = 0
     _pre_roll_samples: int = 0
     _silence_samples: int = 0
@@ -66,7 +67,6 @@ class SpeechSegmenter:
             self.max_segment_seconds = float(os.getenv("BALANCED_MAX_SEGMENT_SECONDS", "4.5"))
 
     def reset(self) -> None:
-        self._speech.clear()
         self._pre_roll.clear()
         self._speech_samples = 0
         self._pre_roll_samples = 0
@@ -82,21 +82,24 @@ class SpeechSegmenter:
     def speech_seconds(self) -> float:
         return float(self._speech_samples) / float(self.sample_rate)
 
+    @property
+    def silence_seconds(self) -> float:
+        return float(self._silence_samples) / float(self.sample_rate)
+
+    def likely_close_to_final(self, margin_seconds: float = 0.35) -> bool:
+        if not self._in_speech:
+            return False
+        margin_samples = max(1, int(margin_seconds * self.sample_rate))
+        max_remaining = int(self.max_segment_seconds * self.sample_rate) - self._speech_samples
+        silence_remaining = int(self.end_silence_seconds * self.sample_rate) - self._silence_samples
+        return max_remaining <= margin_samples or (self._silence_samples > 0 and silence_remaining <= margin_samples)
+
     def current_snapshot(self, max_seconds: float | None = None) -> np.ndarray | None:
-        if not self._speech:
+        if self._speech_samples <= 0:
             return None
         max_samples = int(max_seconds * self.sample_rate) if max_seconds else self._speech_samples
-        remaining = max_samples
-        selected: list[np.ndarray] = []
-        for chunk in reversed(self._speech):
-            if remaining <= 0:
-                break
-            selected.append(chunk if len(chunk) <= remaining else chunk[-remaining:])
-            remaining -= min(len(chunk), remaining)
-        selected.reverse()
-        if len(selected) == 1:
-            return selected[0].copy()
-        return np.concatenate(selected).astype(np.float32, copy=False)
+        start = max(0, self._speech_samples - max_samples)
+        return self._speech_buffer[start : self._speech_samples].copy()
 
     def add(self, audio: np.ndarray) -> np.ndarray | None:
         """Add a chunk and return a finalized speech segment, if available."""
@@ -109,16 +112,17 @@ class SpeechSegmenter:
         if not self._in_speech:
             if is_speech:
                 self._in_speech = True
-                self._speech = list(self._pre_roll)
-                self._speech.append(audio)
-                self._speech_samples = self._pre_roll_samples + len(audio)
+                required = self._pre_roll_samples + len(audio)
+                self._ensure_speech_capacity(required)
+                for chunk in self._pre_roll:
+                    self._append_speech(chunk)
+                self._append_speech(audio)
                 self._silence_samples = 0
             else:
                 self._remember_pre_roll(audio)
             return None
 
-        self._speech.append(audio)
-        self._speech_samples += len(audio)
+        self._append_speech(audio)
 
         if is_speech:
             self._silence_samples = 0
@@ -130,7 +134,7 @@ class SpeechSegmenter:
         enough_silence = self._silence_samples >= int(self.end_silence_seconds * self.sample_rate)
 
         if reached_max or (enough_speech and enough_silence):
-            finalized = np.concatenate(self._speech) if self._speech else np.empty(0, dtype=np.float32)
+            finalized = self._speech_buffer[: self._speech_samples].copy()
             finalize_reason = "max" if reached_max else "silence"
             self.reset()
             self.last_finalize_reason = finalize_reason
@@ -139,9 +143,9 @@ class SpeechSegmenter:
         return None
 
     def flush(self) -> np.ndarray | None:
-        if not self._speech:
+        if self._speech_samples <= 0:
             return None
-        finalized = np.concatenate(self._speech)
+        finalized = self._speech_buffer[: self._speech_samples].copy()
         self.reset()
         self.last_finalize_reason = "flush"
         return finalized
@@ -151,5 +155,23 @@ class SpeechSegmenter:
         self._pre_roll_samples += len(audio)
         max_samples = int(self.pre_roll_seconds * self.sample_rate)
         while self._pre_roll and self._pre_roll_samples > max_samples:
-            removed = self._pre_roll.pop(0)
+            removed = self._pre_roll.popleft()
             self._pre_roll_samples -= len(removed)
+
+    def _append_speech(self, audio: np.ndarray) -> None:
+        if audio.size == 0:
+            return
+        end = self._speech_samples + len(audio)
+        self._ensure_speech_capacity(end)
+        self._speech_buffer[self._speech_samples : end] = audio
+        self._speech_samples = end
+
+    def _ensure_speech_capacity(self, required: int) -> None:
+        if required <= len(self._speech_buffer):
+            return
+        configured = int(max(self.max_segment_seconds, 1.0) * self.sample_rate)
+        capacity = max(required, configured, max(1, len(self._speech_buffer) * 2))
+        replacement = np.empty(capacity, dtype=np.float32)
+        if self._speech_samples:
+            replacement[: self._speech_samples] = self._speech_buffer[: self._speech_samples]
+        self._speech_buffer = replacement

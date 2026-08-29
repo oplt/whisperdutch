@@ -1,7 +1,8 @@
 {
   "scripts": {
     "test": "node --test frontend-extension/test/*.test.js",
-    "check": "npm test"
+    "check": "npm test",
+    "benchmark:worklet": "node frontend-extension/test/worklet-benchmark.js"
   },
   "devDependencies": {}
 }

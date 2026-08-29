@@ -49,11 +49,14 @@ class SessionStats:
     audio_chunks: int = 0
     finalized_segments: int = 0
     partial_segments: int = 0
+    partial_inferences: int = 0
+    partial_suppressed: int = 0
     dropped_segments: int = 0
     merged_segments: int = 0
     translations_started: int = 0
     translations_cancelled: int = 0
     max_queue_depth: int = 0
+    max_translation_queue_depth: int = 0
 
 
 class SubtitleWebSocketSession:
@@ -79,11 +82,18 @@ class SubtitleWebSocketSession:
         self.flush_requested = False
         self.partial_enabled = _env_bool("PARTIAL_ASR_ENABLED", True)
         self.partial_interval_ms = int(os.getenv("PARTIAL_ASR_INTERVAL_MS", "900"))
+        self.partial_interval_max_ms = max(
+            self.partial_interval_ms,
+            int(os.getenv("PARTIAL_ASR_MAX_INTERVAL_MS", "2400")),
+        )
         self.partial_max_seconds = float(os.getenv("PARTIAL_ASR_MAX_SECONDS", "1.8"))
         self._last_partial_at = 0.0
         self._processing_kind: str | None = None
         self._translation_in_progress = False
         self._final_generation = 0
+        self._last_realtime_factor = 0.0
+        self._backpressure_until = 0.0
+        self._partial_suppression_reasons: dict[str, int] = {}
 
     async def run(self) -> None:
         origin = self.websocket.headers.get("origin")
@@ -126,49 +136,31 @@ class SubtitleWebSocketSession:
                 continue
 
             audio = pcm16le_to_float32(message["bytes"])
-            self.stats.audio_chunks += 1
-            self.metrics.audio_chunks = self.stats.audio_chunks
-            self.metrics.touch()
-            finalized = self.segmenter.add(audio)
-            await self._maybe_enqueue_partial()
-            if finalized is None:
-                continue
+            await self._handle_audio(audio)
 
-            self.stats.finalized_segments += 1
-            self.metrics.finalized_segments = self.stats.finalized_segments
-            logger.debug(
-                "audio_segment_finalized client_id=%s samples=%s seconds=%.2f queue_depth=%s",
-                self.client_id,
-                len(finalized),
-                float(len(finalized)) / float(self.config.sample_rate),
-                self.queue.qsize(),
-            )
-            await self._enqueue(
-                SegmentJob(
-                    "final",
-                    finalized,
-                    self.config,
-                    time.perf_counter(),
-                    force=self.segmenter.last_finalize_reason == "silence",
-                    generation=self._next_final_generation(),
-                )
-            )
+    async def _handle_audio(self, audio: np.ndarray) -> None:
+        self.stats.audio_chunks += 1
+        self.metrics.audio_chunks = self.stats.audio_chunks
+        self.metrics.touch()
+        finalized = self.segmenter.add(audio)
+        if finalized is None:
+            await self._maybe_enqueue_partial()
+            return
+
+        await self._enqueue_final(
+            finalized,
+            force=self.segmenter.last_finalize_reason == "silence",
+        )
 
     async def _handle_text(self, raw: str) -> None:
         if _is_flush(raw):
             self.flush_requested = True
             finalized = self.segmenter.flush()
             if finalized is not None:
-                await self._enqueue(
-                    SegmentJob(
-                        "final",
-                        finalized,
-                        self.config,
-                        time.perf_counter(),
-                        force=True,
-                        generation=self._next_final_generation(),
-                    )
-                )
+                await self._enqueue_final(finalized, force=True)
+            else:
+                self._next_final_generation()
+                self._discard_pending_partials("flush")
             await self._enqueue(SegmentJob("flush", None, self.config, time.perf_counter(), force=True))
             return
 
@@ -200,10 +192,15 @@ class SubtitleWebSocketSession:
         await self._send_json({"type": "config_ack", "config": self.config.__dict__})
 
     async def _maybe_enqueue_partial(self) -> None:
-        if not self.partial_enabled or self.queue.qsize() > 0 or self._processing_kind is not None:
+        if not self.partial_enabled:
             return
         now = time.perf_counter()
-        if (now - self._last_partial_at) * 1000 < self.partial_interval_ms:
+        reason = self._partial_suppression_reason(now)
+        if reason:
+            self._record_partial_suppression(reason)
+            return
+        interval_ms = self._adaptive_partial_interval_ms()
+        if (now - self._last_partial_at) * 1000 < interval_ms:
             return
         snapshot = self.segmenter.current_snapshot(max_seconds=self.partial_max_seconds)
         if snapshot is None:
@@ -215,6 +212,64 @@ class SubtitleWebSocketSession:
             SegmentJob("partial", snapshot, self.config, now, force=False, generation=self._final_generation),
             merge_when_full=False,
         )
+
+    def _partial_suppression_reason(self, now: float) -> str | None:
+        if self.flush_requested:
+            return "flush_requested"
+        if any(job.kind == "final" for job in self.queue._queue):
+            return "final_queued"
+        if self._processing_kind is not None:
+            return "asr_busy"
+        if self.queue.qsize() > 0:
+            return "asr_queue_nonzero"
+        if self.queue.full() or self.translation_queue.full() or now < self._backpressure_until:
+            return "backpressure"
+        if self._last_realtime_factor >= 0.80:
+            return "realtime_factor"
+        if self.segmenter.likely_close_to_final():
+            return "close_to_final"
+        return None
+
+    def _adaptive_partial_interval_ms(self) -> int:
+        realtime_factor = max(0.0, self._last_realtime_factor)
+        load_multiplier = 1.0 + min(1.5, realtime_factor * 1.5)
+        return min(self.partial_interval_max_ms, max(self.partial_interval_ms, round(self.partial_interval_ms * load_multiplier)))
+
+    def _record_partial_suppression(self, reason: str) -> None:
+        self.stats.partial_suppressed += 1
+        self.metrics.partial_suppressed = self.stats.partial_suppressed
+        self._partial_suppression_reasons[reason] = self._partial_suppression_reasons.get(reason, 0) + 1
+
+    async def _enqueue_final(self, audio: np.ndarray, *, force: bool) -> None:
+        generation = self._next_final_generation()
+        self._discard_pending_partials("final")
+        self.stats.finalized_segments += 1
+        self.metrics.finalized_segments = self.stats.finalized_segments
+        logger.debug(
+            "audio_segment_finalized client_id=%s samples=%s seconds=%.2f queue_depth=%s",
+            self.client_id,
+            len(audio),
+            float(len(audio)) / float(self.config.sample_rate),
+            self.queue.qsize(),
+        )
+        await self._enqueue(
+            SegmentJob(
+                "final",
+                audio,
+                self.config,
+                time.perf_counter(),
+                force=force,
+                generation=generation,
+            )
+        )
+
+    def _discard_pending_partials(self, new_kind: str) -> None:
+        pending = self._take_pending_jobs()
+        for pending_job in pending:
+            if pending_job.kind == "partial":
+                self._record_dropped_segment(pending_job.kind, new_kind)
+            else:
+                self.queue.put_nowait(pending_job)
 
     async def _enqueue(self, job: SegmentJob, merge_when_full: bool = True) -> None:
         if self.queue.full():
@@ -244,6 +299,7 @@ class SubtitleWebSocketSession:
                 job.created_at = min(previous.created_at, job.created_at)
                 self.stats.merged_segments += 1
                 self.metrics.merged_segments = self.stats.merged_segments
+                self._backpressure_until = time.perf_counter() + 2.0
             else:
                 await self._restore_pending_jobs(pending)
                 await self.queue.put(job)
@@ -292,6 +348,8 @@ class SubtitleWebSocketSession:
     async def _process_partial(self, job: SegmentJob) -> None:
         if job.audio is None:
             return
+        self.stats.partial_inferences += 1
+        self.metrics.partial_inferences = self.stats.partial_inferences
         prompt = self.sentence_assembler.context_prompt()
         try:
             text, meta = await asyncio.to_thread(transcribe_partial, job.audio, job.config, prompt)
@@ -329,6 +387,7 @@ class SubtitleWebSocketSession:
             await self._safe_send_json(map_exception(exc).payload(debug_enabled=_env_bool("DEBUG_ERRORS", False)))
             return
         adapt_segmenter(self.segmenter, job.config, float(meta.get("realtime_factor") or 0.0))
+        self._last_realtime_factor = float(meta.get("realtime_factor") or 0.0)
         await self._maybe_degrade_mode(job.config, float(meta.get("realtime_factor") or 0.0))
         self.metrics.asr_latency_ms.append(int(meta.get("asr_latency_ms") or 0))
         audio_seconds = float(meta.get("audio_seconds") or 0.0)
@@ -416,6 +475,8 @@ class SubtitleWebSocketSession:
             )
             self.stats.translations_started += 1
             self.metrics.translations_started = self.stats.translations_started
+            self.stats.max_translation_queue_depth = max(self.stats.max_translation_queue_depth, self.translation_queue.qsize())
+            self.metrics.max_translation_queue_depth = self.stats.max_translation_queue_depth
             self.metrics.touch()
 
     async def _process_translations(self) -> None:
@@ -519,6 +580,7 @@ class SubtitleWebSocketSession:
     def _record_dropped_segment(self, dropped_kind: str, new_kind: str) -> None:
         self.stats.dropped_segments += 1
         self.metrics.dropped_segments = self.stats.dropped_segments
+        self._backpressure_until = time.perf_counter() + 2.0
         logger.warning(
             "pipeline_queue_drop client_id=%s dropped_kind=%s new_kind=%s",
             self.client_id,

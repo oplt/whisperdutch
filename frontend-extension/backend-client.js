@@ -9,6 +9,7 @@
     source: "backendSource",
     recoveryCount: "backendUrlRecoveryCount"
   };
+  let readinessPoll = null;
 
   function storage() {
     try {
@@ -166,6 +167,44 @@
     }
   }
 
+  async function probeReady(baseUrl = getBaseUrl()) {
+    const normalizedBase = normalizeBaseUrl(baseUrl);
+    if (!normalizedBase) return null;
+    try {
+      const response = await request(url("/health/ready", normalizedBase), { cache: "no-store" });
+      const data = await response.json();
+      return { ...data, ready: Boolean(response.ok && data?.ready && data?.model_ready) };
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function waitUntilReady(options = {}) {
+    if (readinessPoll) return readinessPoll;
+    const timeoutMs = Math.max(250, Number(options.timeoutMs) || 45000);
+    const startedAt = Date.now();
+    const onProgress = typeof options.onProgress === "function" ? options.onProgress : () => {};
+    const sleep = typeof options.sleep === "function"
+      ? options.sleep
+      : delay => new Promise(resolve => setTimeout(resolve, delay));
+
+    readinessPoll = (async () => {
+      let attempt = 0;
+      while (Date.now() - startedAt < timeoutMs) {
+        attempt += 1;
+        const status = await probeReady();
+        if (status?.ready) return status;
+        const delayMs = Math.min(2000, Math.round(250 * (1.6 ** Math.min(attempt - 1, 6))));
+        onProgress({ attempt, delayMs, phase: status?.phase || "starting" });
+        await sleep(delayMs);
+      }
+      return null;
+    })().finally(() => {
+      readinessPoll = null;
+    });
+    return readinessPoll;
+  }
+
   async function findHealthyConnection({ includeDefault = true } = {}) {
     const cachedBase = storedBaseUrl();
     const cachedWs = storedWsUrl();
@@ -266,6 +305,8 @@
     deriveWsUrl,
     baseUrlFromWs,
     probeBackend,
+    probeReady,
+    waitUntilReady,
     findHealthyConnection,
     postClientLog,
     fetchBackendLogs,

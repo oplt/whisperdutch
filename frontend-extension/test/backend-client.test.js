@@ -99,3 +99,46 @@ test("stale backend recovery increments the local recovery metric", async () => 
   delete global.fetch;
   delete global.localStorage;
 });
+
+test("readiness polling uses backoff and resolves when models become ready", async () => {
+  let calls = 0;
+  const delays = [];
+  global.fetch = async () => {
+    calls += 1;
+    const ready = calls === 3;
+    return {
+      ok: ready,
+      json: async () => ({ ready, model_ready: ready, phase: ready ? "ready" : "loading_asr" })
+    };
+  };
+
+  const result = await backend.waitUntilReady({
+    timeoutMs: 5000,
+    sleep: async delay => { delays.push(delay); }
+  });
+
+  assert.equal(result.ready, true);
+  assert.equal(calls, 3);
+  assert.deepEqual(delays, [250, 400]);
+  delete global.fetch;
+});
+
+test("simultaneous readiness callers share one poll", async () => {
+  let calls = 0;
+  let release;
+  global.fetch = async () => {
+    calls += 1;
+    await new Promise(resolve => { release = resolve; });
+    return { ok: true, json: async () => ({ ready: true, model_ready: true, phase: "ready" }) };
+  };
+
+  const first = backend.waitUntilReady({ timeoutMs: 1000 });
+  const second = backend.waitUntilReady({ timeoutMs: 1000 });
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  release();
+
+  assert.equal(first, second);
+  assert.equal((await first).ready, true);
+  assert.equal(calls, 1);
+  delete global.fetch;
+});

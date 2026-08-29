@@ -15,7 +15,7 @@ local-dev:
 	fi
 
 install-backend:
-	cd backend && python -m venv .venv && . .venv/bin/activate && pip install -r requirements.lock
+	cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.lock && pip install -r requirements-dev.txt
 
 prepare-models:
 	cd backend && . .venv/bin/activate && bash scripts/prepare_translation_ct2.sh

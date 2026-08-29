@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict, deque
-from threading import RLock
+from threading import Event, RLock, Thread
+from time import monotonic
 
 from app.translation_cache import DurableTranslationCache
 from app.translator import TRANSLATION_CACHE_SCHEMA_VERSION, TranslationEngine, _cache_key_id
@@ -36,6 +37,7 @@ def make_engine_with_store(store: DurableTranslationCache) -> TranslationEngine:
     engine._cache_miss_lookup_latencies_ms = deque(maxlen=1000)
     engine._cache_miss_translation_latencies_ms = deque(maxlen=1000)
     engine.durable_cache = store
+    engine._durable_executor = None
     return engine
 
 
@@ -116,3 +118,114 @@ def test_translation_engine_clear_cache_clears_both_tiers(tmp_path) -> None:
     assert result["cleared"] == 1
     assert result["durable_cleared"] == 1
     assert store.info()["size"] == 0
+
+
+def test_durable_cache_reuses_one_sqlite_connection(tmp_path, monkeypatch) -> None:
+    import app.translation_cache as cache_module
+
+    real_connect = cache_module.sqlite3.connect
+    calls = 0
+
+    def counting_connect(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(cache_module.sqlite3, "connect", counting_connect)
+    store = DurableTranslationCache(tmp_path / "translation-cache.sqlite3", max_items=4)
+    store.set("one", "Een", "One", {})
+    assert store.get("one") == "One"
+    store.info()
+
+    assert calls == 1
+
+
+def test_durable_cache_defers_hit_stat_writes(tmp_path) -> None:
+    store = DurableTranslationCache(tmp_path / "translation-cache.sqlite3", max_items=128)
+    store.set("one", "Een", "One", {})
+
+    assert store.get("one") == "One"
+    row = store._connection().execute(
+        "SELECT hit_count FROM translation_cache_entries WHERE cache_key = 'one'"
+    ).fetchone()
+    assert row["hit_count"] == 0
+
+    store.info()
+    row = store._connection().execute(
+        "SELECT hit_count FROM translation_cache_entries WHERE cache_key = 'one'"
+    ).fetchone()
+    assert row["hit_count"] == 1
+
+
+def test_translation_engine_falls_back_when_sqlite_read_and_write_fail(tmp_path, monkeypatch) -> None:
+    store = DurableTranslationCache(tmp_path / "translation-cache.sqlite3", max_items=4)
+    engine = make_engine_with_store(store)
+    engine._translate_transformers_many = lambda texts: [f"translated:{text}" for text in texts]
+    monkeypatch.setattr(store, "get", lambda _key: (_ for _ in ()).throw(OSError("read failed")))
+    monkeypatch.setattr(store, "set", lambda *_args: (_ for _ in ()).throw(OSError("write failed")))
+
+    assert engine.translate("Hallo") == "translated:Hallo"
+    assert engine.translate("Hallo") == "translated:Hallo"
+    info = engine.cache_info()
+
+    assert info["durable"]["read_failures"] == 1
+    assert info["durable"]["write_failures"] == 1
+    assert info["hits"] == 1
+
+
+def test_slow_l2_lookup_does_not_block_l1_hit(tmp_path, monkeypatch) -> None:
+    store = DurableTranslationCache(tmp_path / "translation-cache.sqlite3", max_items=4)
+    engine = make_engine_with_store(store)
+    slow_started = Event()
+    release_slow = Event()
+    slow_key = engine.cache_key("Langzaam")
+    fast_key = engine.cache_key("Snel")
+    with engine._cache_lock:
+        engine._cache_set_locked(fast_key, "Fast", persist=False)
+
+    def slow_get(cache_key: str) -> str | None:
+        if cache_key == _cache_key_id(slow_key):
+            slow_started.set()
+            assert release_slow.wait(timeout=1)
+        return None
+
+    monkeypatch.setattr(store, "get", slow_get)
+    engine._translate_transformers_many = lambda texts: [f"translated:{text}" for text in texts]
+    slow_result: list[str] = []
+    thread = Thread(target=lambda: slow_result.append(engine.translate("Langzaam")))
+    thread.start()
+    assert slow_started.wait(timeout=1)
+
+    started = monotonic()
+    assert engine.translate("Snel") == "Fast"
+    l1_elapsed = monotonic() - started
+    release_slow.set()
+    thread.join(timeout=2)
+
+    assert l1_elapsed < 0.05
+    assert slow_result == ["translated:Langzaam"]
+
+
+def test_cache_clear_while_durable_translation_is_inflight_does_not_repopulate(tmp_path) -> None:
+    store = DurableTranslationCache(tmp_path / "translation-cache.sqlite3", max_items=4)
+    engine = make_engine_with_store(store)
+    started = Event()
+    release = Event()
+
+    def translate(texts: list[str]) -> list[str]:
+        started.set()
+        assert release.wait(timeout=1)
+        return [f"stale:{text}" for text in texts]
+
+    engine._translate_transformers_many = translate
+    result: list[str] = []
+    thread = Thread(target=lambda: result.append(engine.translate("Hallo")))
+    thread.start()
+    assert started.wait(timeout=1)
+    engine.clear_cache("during translation")
+    release.set()
+    thread.join(timeout=2)
+
+    assert result == ["stale:Hallo"]
+    assert store.info()["size"] == 0
+    assert engine.cache_info()["size"] == 0

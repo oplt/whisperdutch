@@ -36,6 +36,7 @@ def make_engine(max_cache_items: int = 4096) -> TranslationEngine:
     engine._cache_miss_lookup_latencies_ms = deque(maxlen=1000)
     engine._cache_miss_translation_latencies_ms = deque(maxlen=1000)
     engine.durable_cache = None
+    engine._durable_executor = None
     return engine
 
 

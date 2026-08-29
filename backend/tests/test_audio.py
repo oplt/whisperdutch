@@ -58,3 +58,41 @@ def test_partial_snapshot_copies_only_recent_requested_audio() -> None:
 
     assert snapshot is not None
     assert snapshot.tolist() == [2, 2, 2, 2, 2]
+
+
+def test_segmenter_reuses_contiguous_buffer_between_utterances() -> None:
+    segmenter = SpeechSegmenter(sample_rate=10, min_speech_seconds=0.1, end_silence_seconds=0.1, pre_roll_seconds=0)
+    segmenter.add(np.ones(5, dtype=np.float32))
+    first_buffer = segmenter._speech_buffer
+    finalized = segmenter.add(np.zeros(2, dtype=np.float32))
+
+    assert finalized is not None
+    assert not np.shares_memory(finalized, first_buffer)
+
+    segmenter.add(np.ones(3, dtype=np.float32))
+    assert segmenter._speech_buffer is first_buffer
+
+
+def test_pre_roll_uses_bounded_deque_and_preserves_recent_audio() -> None:
+    segmenter = SpeechSegmenter(sample_rate=10, min_speech_seconds=0.1, pre_roll_seconds=0.3)
+    segmenter.add(np.full(2, 0.001, dtype=np.float32))
+    segmenter.add(np.full(2, 0.002, dtype=np.float32))
+    segmenter.add(np.full(2, 0.003, dtype=np.float32))
+
+    assert segmenter._pre_roll_samples <= 3
+    segmenter.add(np.full(2, 0.1, dtype=np.float32))
+    snapshot = segmenter.current_snapshot()
+
+    assert snapshot is not None
+    assert np.allclose(snapshot, [0.003, 0.003, 0.1, 0.1])
+
+
+def test_partial_snapshot_is_detached_from_reusable_buffer() -> None:
+    segmenter = SpeechSegmenter(sample_rate=10, min_speech_seconds=0.1, pre_roll_seconds=0)
+    segmenter.add(np.ones(4, dtype=np.float32))
+    snapshot = segmenter.current_snapshot()
+    assert snapshot is not None
+
+    snapshot[:] = 9
+
+    assert segmenter.current_snapshot().tolist() == [1, 1, 1, 1]

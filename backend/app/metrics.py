@@ -19,11 +19,14 @@ class SessionMetrics:
     audio_chunks: int = 0
     finalized_segments: int = 0
     partial_segments: int = 0
+    partial_inferences: int = 0
+    partial_suppressed: int = 0
     dropped_segments: int = 0
     merged_segments: int = 0
     translations_started: int = 0
     translations_cancelled: int = 0
     max_queue_depth: int = 0
+    max_translation_queue_depth: int = 0
     reconnects: int = 0
     audio_seconds_total: float = 0.0
     audio_seconds: deque[float] = field(default_factory=lambda: deque(maxlen=METRIC_SAMPLE_LIMIT))
