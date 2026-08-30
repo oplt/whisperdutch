@@ -48,6 +48,17 @@ def test_asr_hot_path_does_not_reread_environment(monkeypatch) -> None:
     assert engine.model.calls[0]["beam_size"] == 1
 
 
+def test_asr_uses_selected_source_language(monkeypatch) -> None:
+    monkeypatch.setattr(asr, "WhisperModel", FakeWhisperModel)
+    monkeypatch.setenv("ASR_DEVICE", "cpu")
+    engine = asr.TranscriptionEngine()
+
+    result = engine.transcribe_result(np.ones(1600, dtype=np.float32), language="de", mode="fast")
+
+    assert result.text == "hallo"
+    assert engine.model.calls[0]["language"] == "de"
+
+
 def test_asr_rejects_invalid_invariant_configuration(monkeypatch) -> None:
     monkeypatch.setattr(asr, "WhisperModel", FakeWhisperModel)
     monkeypatch.setenv("ASR_DEVICE", "cpu")

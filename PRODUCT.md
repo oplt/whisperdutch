@@ -6,11 +6,11 @@ product
 
 ## Users
 
-People watching Dutch-language video in Chrome who need immediate Dutch transcription and English translation. They are usually focused on the video, may be learning Dutch, and should be able to understand the subtitle window with brief peripheral glances.
+People watching browser video in Chrome, Brave, Firefox, or another compatible browser who need immediate transcription and translation in a language they understand. They are usually focused on the video and should be able to understand the subtitle window with brief peripheral glances.
 
 ## Product Purpose
 
-Provide dependable, low-latency Dutch subtitles and English translation from the current browser tab while keeping audio, transcripts, and model processing local by default. Success means the controls disappear into the viewing workflow, subtitles remain easy to read, and recovery from backend or capture interruptions is clear and trustworthy.
+Provide dependable, low-latency multilingual subtitles and translations from browser audio while keeping audio, transcripts, and model processing local by default. Success means language choice is explicit, controls disappear into the viewing workflow, subtitles remain easy to read, and recovery from backend or capture interruptions is clear and trustworthy.
 
 ## Brand Personality
 

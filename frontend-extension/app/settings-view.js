@@ -7,6 +7,8 @@
       this.openButton = byId("settingsBtn");
       this.dialog = byId("settingsDialog");
       this.quality = byId("qualityMode");
+      this.sourceLanguage = byId("sourceLanguage");
+      this.targetLanguage = byId("targetLanguage");
       this.context = byId("contextPrompt");
       this.volume = byId("monitorVolume");
       this.muted = byId("muteMonitor");
@@ -18,9 +20,23 @@
       this.sessionSelect = byId("sessionSelect");
       this.diagnosticsOutput = byId("diagnosticsOutput");
       this.logsOutput = byId("logsOutput");
+      this.monitorHelp = byId("monitorHelp");
       this.deviceInputs = Array.from(documentRef.querySelectorAll('input[name="asrDevice"]'));
       this.contextTimer = null;
+      root.SubtitleApp?.populateLanguageSelect?.(this.sourceLanguage, documentRef);
+      root.SubtitleApp?.populateLanguageSelect?.(this.targetLanguage, documentRef);
       this.bindDialog();
+    }
+
+    setMonitorSupported(supported) {
+      this.volume.disabled = !supported;
+      this.muted.disabled = !supported;
+      if (this.monitorHelp) {
+        this.monitorHelp.textContent = supported
+          ? ""
+          : "Firefox receives an existing system-audio monitor stream, so playback volume stays under Firefox or system control.";
+        this.monitorHelp.hidden = supported;
+      }
     }
 
     bindDialog() {
@@ -37,6 +53,10 @@
     load() {
       const mode = this.storage.getItem("subtitleQualityMode");
       this.quality.value = ["fast", "balanced", "quality"].includes(mode) ? mode : "balanced";
+      const normalizeLanguage = root.SubtitleApp?.normalizeLanguage
+        || ((value, fallback) => String(value || "").trim().toLowerCase() || fallback);
+      this.sourceLanguage.value = normalizeLanguage(this.storage.getItem("subtitleSourceLanguage"), "nl");
+      this.targetLanguage.value = normalizeLanguage(this.storage.getItem("subtitleTargetLanguage"), "en");
       this.context.value = this.storage.getItem("subtitleContextPrompt") || "";
       this.volume.value = this.storage.getItem("subtitleMonitorVolume") || "1";
       this.muted.checked = this.storage.getItem("subtitleMonitorMuted") === "1";
@@ -56,6 +76,8 @@
     values() {
       return {
         mode: this.quality.value,
+        sourceLang: this.sourceLanguage.value || "nl",
+        targetLang: this.targetLanguage.value || "en",
         contextPrompt: this.context.value.trim(),
         volume: Number(this.volume.value),
         muted: this.muted.checked,
@@ -70,6 +92,13 @@
         this.storage.setItem("subtitleQualityMode", this.quality.value);
         callbacks.onConfig?.(this.values());
       });
+      const languagesChanged = () => {
+        this.storage.setItem("subtitleSourceLanguage", this.sourceLanguage.value);
+        this.storage.setItem("subtitleTargetLanguage", this.targetLanguage.value);
+        (callbacks.onLanguages || callbacks.onConfig)?.(this.values());
+      };
+      this.sourceLanguage.addEventListener("change", languagesChanged);
+      this.targetLanguage.addEventListener("change", languagesChanged);
       this.context.addEventListener("input", () => {
         this.storage.setItem("subtitleContextPrompt", this.context.value);
         root.clearTimeout(this.contextTimer);

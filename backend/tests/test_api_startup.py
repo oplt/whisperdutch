@@ -100,3 +100,15 @@ def test_stale_warmup_cannot_mark_new_generation_ready() -> None:
     assert state.set_phase(first, "ready") is False
     assert state.set_phase(second, "loading_asr") is True
     assert state.phase == "loading_asr"
+
+
+def test_languages_endpoint_exposes_multilingual_catalog(monkeypatch) -> None:
+    monkeypatch.setattr(model_runtime.runtime_state, "is_ready", lambda: False)
+    endpoint = route_endpoint(create_app(), "/api/languages")
+
+    payload = endpoint()
+
+    assert payload["default_source"] == "nl"
+    assert payload["default_target"] == "en"
+    assert {language["code"] for language in payload["languages"]} >= {"nl", "en", "de", "fr", "ar", "ja"}
+    assert payload["translation"] is None

@@ -40,11 +40,18 @@ function mockDocument() {
 }
 
 test("SettingsView load falls back to balanced mode and CPU device", () => {
-  const storage = memoryStorage({ subtitleQualityMode: "turbo", subtitleAsrDevice: "unknown" });
+  const storage = memoryStorage({
+    subtitleQualityMode: "turbo",
+    subtitleAsrDevice: "unknown",
+    subtitleSourceLanguage: "de",
+    subtitleTargetLanguage: "fr"
+  });
   const view = new SettingsView(mockDocument(), storage);
   view.load();
   assert.equal(view.quality.value, "balanced");
   assert.equal(view.device, "cpu");
+  assert.equal(view.values().sourceLang, "de");
+  assert.equal(view.values().targetLang, "fr");
 });
 
 test("SettingsView persists monitor and font settings", () => {
@@ -72,6 +79,8 @@ test("SettingsView values expose trimmed context prompt", () => {
   view.volume.value = "1";
   assert.deepEqual(view.values(), {
     mode: "fast",
+    sourceLang: "nl",
+    targetLang: "en",
     contextPrompt: "Ajax match",
     volume: 1,
     muted: false,
@@ -79,4 +88,15 @@ test("SettingsView values expose trimmed context prompt", () => {
     translationFont: 0,
     device: "cpu"
   });
+});
+
+test("Firefox mode disables Chromium-only monitor controls", () => {
+  const view = new SettingsView(mockDocument(), memoryStorage());
+
+  view.setMonitorSupported(false);
+
+  assert.equal(view.volume.disabled, true);
+  assert.equal(view.muted.disabled, true);
+  assert.equal(view.monitorHelp.hidden, false);
+  assert.match(view.monitorHelp.textContent, /Firefox receives/i);
 });

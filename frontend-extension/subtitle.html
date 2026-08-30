@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="styles.css" />
-  <title>Live Dutch Subtitles</title>
+  <title>Live Subtitle Translator</title>
 </head>
 <body>
   <main class="app-shell" aria-labelledby="appTitle">
@@ -14,13 +14,15 @@
         <span id="statusText">Ready</span>
         <span id="latency" class="latency" hidden></span>
       </div>
-      <h1 id="appTitle" class="sr-only">Live Dutch Subtitles</h1>
-      <button id="settingsBtn" class="text-button" type="button">Settings</button>
+      <h1 id="appTitle" class="sr-only">Live Subtitle Translator</h1>
+      <div class="topbar-actions">
+        <button id="vocabularyBtn" class="text-button" type="button">Practising Vocabulary</button>
+        <button id="settingsBtn" class="text-button" type="button">Settings</button>
+      </div>
     </header>
 
-    <section class="subtitle-stage" aria-label="Current subtitle">
-      <p id="currentDutch" class="current-dutch" lang="nl">Listening for Dutch speech…</p>
-      <p id="currentTranslation" class="current-translation" lang="en">English translation will appear here.</p>
+    <section class="subtitle-feed-wrap" aria-label="Live subtitles">
+      <div id="subtitleFeed" class="subtitle-feed"></div>
       <div class="level-track" aria-hidden="true"><span id="inputLevelBar"></span></div>
     </section>
 
@@ -29,18 +31,28 @@
       <button id="pauseBtn" class="button" type="button" hidden>Pause</button>
       <button id="stopBtn" class="button quiet" type="button" hidden>Stop</button>
       <button id="retryBtn" class="button primary" type="button" hidden>Retry</button>
+      <p id="audioSourceHelp" class="capture-help" hidden></p>
     </div>
-
-    <details class="history-panel">
-      <summary>
-        <span>Recent subtitles</span>
-        <span id="historyCount" class="summary-meta">Empty</span>
-      </summary>
-      <div id="historySubtitles" class="history-list" aria-label="Recent subtitle history"></div>
-    </details>
 
     <p id="subtitleAnnouncement" class="sr-only" aria-live="polite" aria-atomic="true"></p>
   </main>
+
+  <dialog id="vocabularyDialog" class="settings-dialog compact-dialog" aria-labelledby="vocabularyTitle">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-header">
+        <div>
+          <p class="eyebrow">Saved from subtitles</p>
+          <h2 id="vocabularyTitle">Practising Vocabulary</h2>
+        </div>
+        <button class="icon-button" value="close" aria-label="Close vocabulary list" type="submit">×</button>
+      </header>
+      <p id="vocabularyEmpty" class="help-text">Click a word in the original subtitles to add it here.</p>
+      <div id="vocabularyList" class="vocabulary-list" aria-live="polite"></div>
+      <div class="button-row">
+        <button id="clearVocabularyBtn" class="button small quiet" type="button">Clear list</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle">
     <form method="dialog" class="dialog-shell">
@@ -55,6 +67,16 @@
       <details class="settings-group" open>
         <summary>General</summary>
         <div class="settings-content">
+          <div class="two-columns">
+            <label class="field" for="sourceLanguage">
+              <span>Spoken language</span>
+              <select id="sourceLanguage"></select>
+            </label>
+            <label class="field" for="targetLanguage">
+              <span>Translate into</span>
+              <select id="targetLanguage"></select>
+            </label>
+          </div>
           <label class="field" for="monitorVolume">
             <span>Tab audio volume</span>
             <input id="monitorVolume" type="range" min="0" max="1" step="0.05" value="1" />
@@ -63,14 +85,15 @@
             <input id="muteMonitor" type="checkbox" />
             <span>Mute tab audio while subtitles continue</span>
           </label>
+          <p id="monitorHelp" class="help-text" hidden></p>
         </div>
       </details>
 
       <details class="settings-group">
         <summary>Appearance</summary>
         <div class="settings-content two-columns">
-          <label class="field" for="dutchFontSize"><span>Dutch text size</span><input id="dutchFontSize" type="number" min="16" max="96" step="1" value="48" /></label>
-          <label class="field" for="translationFontSize"><span>English text size</span><input id="translationFontSize" type="number" min="16" max="96" step="1" value="38" /></label>
+          <label class="field" for="dutchFontSize"><span>Original subtitle size</span><input id="dutchFontSize" type="number" min="16" max="96" step="1" value="48" /></label>
+          <label class="field" for="translationFontSize"><span>Translation size</span><input id="translationFontSize" type="number" min="16" max="96" step="1" value="38" /></label>
         </div>
       </details>
 
@@ -155,7 +178,7 @@
       </header>
       <label class="field" for="glossarySearch"><span>Search rules</span><input id="glossarySearch" placeholder="Search glossary" /></label>
       <div class="glossary-editor">
-        <label class="field" for="glossaryPattern"><span>Dutch pattern</span><input id="glossaryPattern" placeholder="Ajax" /></label>
+        <label class="field" for="glossaryPattern"><span>Source-language pattern</span><input id="glossaryPattern" placeholder="Ajax" /></label>
         <label class="field" for="glossaryReplacement"><span>Replacement</span><input id="glossaryReplacement" placeholder="Ajax Amsterdam" /></label>
         <button id="addGlossaryBtn" class="button primary small" type="button">Add rule</button>
       </div>
@@ -165,6 +188,7 @@
 
   <script src="backend-client.js"></script>
   <script src="subtitle-renderer.js"></script>
+  <script src="app/languages.js"></script>
   <script src="app/state.js"></script>
   <script src="app/logger.js"></script>
   <script src="app/backend-service.js"></script>
@@ -174,6 +198,7 @@
   <script src="app/subtitle-view.js"></script>
   <script src="app/settings-view.js"></script>
   <script src="app/glossary.js"></script>
+  <script src="app/vocabulary.js"></script>
   <script src="app/export.js"></script>
   <script src="app/main.js"></script>
 </body>

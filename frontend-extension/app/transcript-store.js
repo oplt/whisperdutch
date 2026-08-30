@@ -16,8 +16,10 @@
         id: payload.id || `local-${Date.now()}`,
         startMs,
         endMs: startMs + 3500,
-        dutch: payload.dutch || "",
+        dutch: payload.source_text || payload.dutch || "",
         translation: "",
+        sourceLang: payload.source_lang || "nl",
+        targetLang: payload.target_lang || "en",
         pending: true,
         mode: payload.mode || "balanced",
         quality: payload.quality || null
@@ -37,6 +39,8 @@
           endMs: startMs + 3500,
           dutch: "",
           translation: "",
+          sourceLang: payload.source_lang || "nl",
+          targetLang: payload.target_lang || "en",
           pending: false,
           mode: payload.mode || "balanced",
           quality: null
@@ -44,8 +48,10 @@
         this.items.push(item);
         this.byId.set(item.id, item);
       }
-      item.dutch = payload.dutch || item.dutch;
+      item.dutch = payload.source_text || payload.dutch || item.dutch;
       item.translation = payload.translation || item.translation || "Translation unavailable";
+      item.sourceLang = payload.source_lang || item.sourceLang || "nl";
+      item.targetLang = payload.target_lang || item.targetLang || "en";
       item.pending = false;
       item.mode = payload.mode || item.mode;
       item.quality = payload.quality || item.quality;

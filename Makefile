@@ -1,4 +1,4 @@
-.PHONY: local-dev install-backend prepare-models check
+.PHONY: local-dev install-backend prepare-models build-firefox check
 
 PROCFILE ?= Procfile
 
@@ -19,6 +19,9 @@ install-backend:
 
 prepare-models:
 	cd backend && . .venv/bin/activate && bash scripts/prepare_translation_ct2.sh
+
+build-firefox:
+	bash scripts/build_firefox.sh
 
 check:
 	bash scripts/check.sh

@@ -1,6 +1,14 @@
 (function (root) {
   const NATIVE_HOST = "com.polatozgur111.dutch_subtitle_backend";
 
+  function nativeErrorMessage(message) {
+    const detail = String(message || "");
+    if (/native (?:messaging host|application).*not found|no such native application/i.test(detail)) {
+      return "The local backend launcher is not installed for this browser. Run native-host/install_linux.sh from the project folder without sudo, restart the browser, then click Retry.";
+    }
+    return detail || "The local backend launcher is unavailable.";
+  }
+
   class BackendService {
     constructor(options = {}) {
       this.client = options.client || root.BackendClient;
@@ -17,7 +25,7 @@
           const error = this.chrome.runtime.lastError;
           if (error) {
             this.nativeStatus = "Unavailable";
-            reject(new Error(error.message));
+            reject(new Error(nativeErrorMessage(error.message)));
             return;
           }
           this.nativeStatus = response?.ok ? "Available" : "Unavailable";
@@ -118,7 +126,7 @@
     }
   }
 
-  const api = { BackendService, NATIVE_HOST };
+  const api = { BackendService, NATIVE_HOST, nativeErrorMessage };
   root.SubtitleApp = Object.assign(root.SubtitleApp || {}, api);
   if (typeof module !== "undefined") module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);

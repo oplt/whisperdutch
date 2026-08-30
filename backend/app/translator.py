@@ -12,6 +12,13 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from .languages import (
+    DEFAULT_SOURCE_LANGUAGE,
+    DEFAULT_TARGET_LANGUAGE,
+    SUPPORTED_LANGUAGE_CODES,
+    UnsupportedLanguagePairError,
+    validate_language,
+)
 from .logger import get_logger
 from .translation_cache import DurableTranslationCache
 
@@ -112,22 +119,25 @@ def _torch_available() -> bool:
 
 class TranslationEngine:
     """
-    Dutch -> English translation engine.
+    Local multilingual translation engine.
 
     Preferred production path:
       TRANSLATION_ENGINE=ctranslate2
-      TRANSLATION_MODEL=models/opus-mt-nl-en-ct2
-      TRANSLATION_TOKENIZER=Helsinki-NLP/opus-mt-nl-en
+      TRANSLATION_MODEL=models/m2m100-418m-ct2
+      TRANSLATION_TOKENIZER=facebook/m2m100_418M
 
     Fallback path:
       TRANSLATION_ENGINE=transformers
-      TRANSLATION_MODEL=Helsinki-NLP/opus-mt-nl-en
+      TRANSFORMERS_TRANSLATION_MODEL=facebook/m2m100_418M
     """
 
     def __init__(self) -> None:
         self.engine = os.getenv("TRANSLATION_ENGINE", "auto").strip().lower()
-        self.model_name = os.getenv("TRANSLATION_MODEL", "models/opus-mt-nl-en-ct2")
-        self.tokenizer_name = os.getenv("TRANSLATION_TOKENIZER", "Helsinki-NLP/opus-mt-nl-en")
+        self.model_name = os.getenv("TRANSLATION_MODEL", "models/m2m100-418m-ct2")
+        self.tokenizer_name = os.getenv("TRANSLATION_TOKENIZER", "facebook/m2m100_418M")
+        self.model_family = self._detect_model_family()
+        self.fixed_source_language = os.getenv("TRANSLATION_SOURCE_LANGUAGE", DEFAULT_SOURCE_LANGUAGE).strip().lower()
+        self.fixed_target_language = os.getenv("TRANSLATION_TARGET_LANGUAGE", DEFAULT_TARGET_LANGUAGE).strip().lower()
         self.compute_type = os.getenv("TRANSLATION_COMPUTE_TYPE", "float16")
         self.beam_size = int(os.getenv("TRANSLATION_BEAM_SIZE", "1"))
         self.max_decoding_length = int(os.getenv("TRANSLATION_MAX_TOKENS", "160"))
@@ -141,6 +151,7 @@ class TranslationEngine:
         self.model: Any = None
         self.cache: OrderedDict[TranslationCacheKey, str] = OrderedDict()
         self._cache_lock = RLock()
+        self._model_lock = RLock()
         self._inflight: dict[TranslationCacheKey, _InFlightTranslation] = {}
         self._cache_generation = 0
         self.cache_schema_version = TRANSLATION_CACHE_SCHEMA_VERSION
@@ -191,6 +202,41 @@ class TranslationEngine:
 
         logger.info("translation_model_ready info=%s", self.info())
 
+    def _detect_model_family(self) -> str:
+        configured = os.getenv("TRANSLATION_MODEL_FAMILY", "auto").strip().lower()
+        if configured not in {"auto", "m2m100", "marian"}:
+            raise ValueError("TRANSLATION_MODEL_FAMILY must be auto, m2m100, or marian")
+        if configured != "auto":
+            return configured
+        identity = f"{self.model_name} {self.tokenizer_name}".lower()
+        return "m2m100" if "m2m100" in identity else "marian"
+
+    def validate_pair(self, source_language: str, target_language: str) -> tuple[str, str]:
+        source = validate_language(source_language)
+        target = validate_language(target_language)
+        family = getattr(self, "model_family", "multilingual" if self.engine == "fake" else "marian")
+        if source == target or family in {"m2m100", "multilingual"}:
+            return source, target
+        fixed_source = getattr(self, "fixed_source_language", DEFAULT_SOURCE_LANGUAGE)
+        fixed_target = getattr(self, "fixed_target_language", DEFAULT_TARGET_LANGUAGE)
+        if (source, target) != (fixed_source, fixed_target):
+            raise UnsupportedLanguagePairError(
+                f"The configured Marian model supports {fixed_source}→{fixed_target} only. "
+                "Prepare the multilingual M2M100 model and restart the backend."
+            )
+        return source, target
+
+    def capabilities(self) -> dict[str, Any]:
+        family = getattr(self, "model_family", "marian")
+        result: dict[str, Any] = {
+            "model_family": family,
+            "multilingual": family == "m2m100",
+            "supported_languages": sorted(SUPPORTED_LANGUAGE_CODES),
+        }
+        if family == "marian":
+            result["supported_pairs"] = [[self.fixed_source_language, self.fixed_target_language]]
+        return result
+
     def _load_ctranslate2(self) -> None:
         import ctranslate2
         from transformers import AutoTokenizer
@@ -217,9 +263,10 @@ class TranslationEngine:
         import torch
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-        model_name = os.getenv("TRANSFORMERS_TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-nl-en")
+        model_name = os.getenv("TRANSFORMERS_TRANSLATION_MODEL", "facebook/m2m100_418M")
         self.model_name = model_name
         self.tokenizer_name = model_name
+        self.model_family = self._detect_model_family()
         logger.info("translation_transformers_loading model=%s device=%s", model_name, self.device)
         local_only = _env_bool("LOCAL_MODELS_ONLY", True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=local_only)
@@ -238,11 +285,13 @@ class TranslationEngine:
             "translation_engine": self.engine,
             "translation_model": self.model_name,
             "translation_tokenizer": self.tokenizer_name,
+            "translation_model_family": self.model_family,
             "translation_device": self.device,
             "translation_compute_type": self.compute_type,
             "translation_beam_size": self.beam_size,
             "translation_cache_items": cache_info["size"],
             "translation_cache": cache_info,
+            "translation_capabilities": self.capabilities(),
         }
 
     def cache_info(self) -> dict[str, Any]:
@@ -394,7 +443,11 @@ class TranslationEngine:
 
     def warmup(self) -> None:
         logger.info("translation_warmup_started")
-        _ = self.translate("Hallo, dit is een test.")
+        _ = self.translate(
+            "Hallo, dit is een test.",
+            source_language=DEFAULT_SOURCE_LANGUAGE,
+            target_language=DEFAULT_TARGET_LANGUAGE,
+        )
         logger.info("translation_warmup_completed")
 
     def translate(
@@ -418,6 +471,10 @@ class TranslationEngine:
         source_language: str = "nl",
         target_language: str = "en",
     ) -> list[str]:
+        source_language, target_language = self.validate_pair(source_language, target_language)
+        if source_language == target_language:
+            return [_normalize_source_text(text) for text in texts]
+
         results: list[str | None] = []
         owners: list[tuple[int, TranslationCacheKey, _InFlightTranslation]] = []
         waiters: list[tuple[int, Future[str]]] = []
@@ -460,9 +517,23 @@ class TranslationEngine:
             translation_started = time.perf_counter()
             try:
                 if self.engine == "ctranslate2":
-                    translated = self._translate_ctranslate2_many(source_texts)
+                    if getattr(self, "model_family", "") == "m2m100":
+                        translated = self._translate_ctranslate2_many(
+                            source_texts,
+                            source_language=source_language,
+                            target_language=target_language,
+                        )
+                    else:
+                        translated = self._translate_ctranslate2_many(source_texts)
                 else:
-                    translated = self._translate_transformers_many(source_texts)
+                    if getattr(self, "model_family", "") == "m2m100":
+                        translated = self._translate_transformers_many(
+                            source_texts,
+                            source_language=source_language,
+                            target_language=target_language,
+                        )
+                    else:
+                        translated = self._translate_transformers_many(source_texts)
             except Exception as exc:
                 with self._cache_lock:
                     for _, key, inflight in owners:
@@ -599,40 +670,68 @@ class TranslationEngine:
         else:
             executor.submit(write)
 
-    def _translate_ctranslate2_many(self, texts: list[str]) -> list[str]:
+    def _translate_ctranslate2_many(
+        self,
+        texts: list[str],
+        *,
+        source_language: str | None = None,
+        target_language: str | None = None,
+    ) -> list[str]:
         if not texts:
             return []
-        source_batches = []
-        for text in texts:
-            input_ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=True, max_length=160)
-            source_batches.append(self.tokenizer.convert_ids_to_tokens(input_ids))
-        results = self.translator.translate_batch(
-            source_batches,
-            beam_size=self.beam_size,
-            max_decoding_length=self.max_decoding_length,
-            return_scores=False,
-        )
-        translations: list[str] = []
-        for result in results:
-            output_tokens = result.hypotheses[0]
-            output_ids = self.tokenizer.convert_tokens_to_ids(output_tokens)
-            translations.append(self.tokenizer.decode(output_ids, skip_special_tokens=True).strip())
-        return translations
+        with self._model_lock:
+            target_prefix: list[list[str]] | None = None
+            if self.model_family == "m2m100":
+                self.tokenizer.src_lang = validate_language(source_language or DEFAULT_SOURCE_LANGUAGE)
+                target_id = self.tokenizer.get_lang_id(validate_language(target_language or DEFAULT_TARGET_LANGUAGE))
+                target_token = self.tokenizer.convert_ids_to_tokens([target_id])[0]
+                target_prefix = [[target_token] for _ in texts]
+            source_batches = []
+            for text in texts:
+                input_ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=True, max_length=160)
+                source_batches.append(self.tokenizer.convert_ids_to_tokens(input_ids))
+            options: dict[str, Any] = {
+                "beam_size": self.beam_size,
+                "max_decoding_length": self.max_decoding_length,
+                "return_scores": False,
+            }
+            if target_prefix is not None:
+                options["target_prefix"] = target_prefix
+            results = self.translator.translate_batch(source_batches, **options)
+            translations: list[str] = []
+            for result in results:
+                output_tokens = list(result.hypotheses[0])
+                if target_prefix and output_tokens and output_tokens[0] == target_prefix[0][0]:
+                    output_tokens = output_tokens[1:]
+                output_ids = self.tokenizer.convert_tokens_to_ids(output_tokens)
+                translations.append(self.tokenizer.decode(output_ids, skip_special_tokens=True).strip())
+            return translations
 
-    def _translate_transformers_many(self, texts: list[str]) -> list[str]:
+    def _translate_transformers_many(
+        self,
+        texts: list[str],
+        *,
+        source_language: str | None = None,
+        target_language: str | None = None,
+    ) -> list[str]:
         if not texts:
             return []
         import torch
 
-        with torch.inference_mode():
+        with self._model_lock, torch.inference_mode():
+            generate_options: dict[str, Any] = {
+                "max_new_tokens": self.max_decoding_length,
+                "num_beams": self.beam_size,
+                "do_sample": False,
+                "use_cache": True,
+            }
+            if self.model_family == "m2m100":
+                self.tokenizer.src_lang = validate_language(source_language or DEFAULT_SOURCE_LANGUAGE)
+                generate_options["forced_bos_token_id"] = self.tokenizer.get_lang_id(
+                    validate_language(target_language or DEFAULT_TARGET_LANGUAGE)
+                )
             inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=160).to(self.device)
-            output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_decoding_length,
-                num_beams=self.beam_size,
-                do_sample=False,
-                use_cache=True,
-            )
+            output_ids = self.model.generate(**inputs, **generate_options)
             return [self.tokenizer.decode(row, skip_special_tokens=True).strip() for row in output_ids]
 
 

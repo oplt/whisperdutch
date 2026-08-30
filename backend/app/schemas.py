@@ -5,12 +5,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .languages import DEFAULT_SOURCE_LANGUAGE, DEFAULT_TARGET_LANGUAGE, validate_language
+
 
 @dataclass(frozen=True)
 class ClientConfig:
     sample_rate: int = 16000
-    source_lang: str = "nl"
-    target_lang: str = "en"
+    source_lang: str = DEFAULT_SOURCE_LANGUAGE
+    target_lang: str = DEFAULT_TARGET_LANGUAGE
     mode: str = "fast"  # fast | balanced | quality
     context_prompt: str = ""
     reconnect_count: int = 0
@@ -19,8 +21,8 @@ class ClientConfig:
 class ClientConfigMessage(BaseModel):
     type: Literal["config"]
     sample_rate: int = Field(default=16000)
-    source_lang: Literal["nl"] = "nl"
-    target_lang: Literal["en"] = "en"
+    source_lang: str = DEFAULT_SOURCE_LANGUAGE
+    target_lang: str = DEFAULT_TARGET_LANGUAGE
     mode: Literal["fast", "balanced", "quality"] = "fast"
     context_prompt: str = Field(default="", max_length=600)
     reconnect_count: int = Field(default=0, ge=0)
@@ -31,6 +33,11 @@ class ClientConfigMessage(BaseModel):
         if value != 16000:
             raise ValueError("sample_rate must be 16000")
         return value
+
+    @field_validator("source_lang", "target_lang")
+    @classmethod
+    def validate_language_code(cls, value: str) -> str:
+        return validate_language(value)
 
     def to_client_config(self) -> ClientConfig:
         return ClientConfig(

@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Local Live Subtitle Translator",
+  "description": "Capture system audio, transcribe the selected language locally, and show translated subtitles.",
+  "version": "0.6.0",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "action": {
+    "default_title": "Open Live Subtitles"
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "dutch-subtitle-translator@polatozgur111.local",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "websiteContent"
+        ]
+      }
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*;"
+  }
+}

@@ -12,7 +12,9 @@
     const url = URL.createObjectURL(blob);
     const link = documentRef.createElement("a");
     link.href = url;
-    link.download = `dutch-subtitles-${new Date().toISOString().replace(/[:.]/g, "-")}.${format}`;
+    const source = rows[0]?.sourceLang || "source";
+    const target = rows[0]?.targetLang || "translation";
+    link.download = `live-subtitles-${source}-${target}-${new Date().toISOString().replace(/[:.]/g, "-")}.${format}`;
     documentRef.body.appendChild(link);
     link.click();
     link.remove();

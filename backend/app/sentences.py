@@ -5,7 +5,7 @@ import re
 from collections import deque
 from dataclasses import dataclass, field
 
-from .text_processor import get_text_processor
+from .text_processor import DutchTextProcessor, get_text_processor
 
 _TERMINAL_RE = re.compile(r'(?<=[.!?…])(?:["”’\)\]]+)?\s+')
 _WORD_RE = re.compile(r"\b[\wÀ-ÿ'-]+\b", re.UNICODE)
@@ -69,7 +69,7 @@ class SentenceAssembler:
     Rules:
     - keep live partial text available immediately;
     - emit final sentences only on punctuation, pause-forced flush, or a safety cap;
-    - avoid finalizing when the Dutch text ends with a connector word.
+    - apply Dutch connector heuristics only when Dutch is selected.
     """
 
     enabled: bool = field(default_factory=lambda: _env_bool("SENTENCE_MODE", True))
@@ -78,10 +78,18 @@ class SentenceAssembler:
     drop_fillers: bool = field(default_factory=lambda: _env_bool("DROP_FILLERS", True))
     context_chars: int = field(default_factory=lambda: _env_int("ASR_CONTEXT_CHARS", 420))
     min_final_words: int = field(default_factory=lambda: _env_int("MIN_FINAL_WORDS", 3))
+    source_language: str = "nl"
 
     _buffer: str = ""
     _recent: deque[str] = field(default_factory=lambda: deque(maxlen=8))
     session_prompt: str = ""
+
+    def configure(self, source_language: str, session_prompt: str = "") -> None:
+        if source_language != self.source_language:
+            self._buffer = ""
+            self._recent.clear()
+            self.source_language = source_language
+        self.session_prompt = session_prompt
 
     def add_fragment(self, fragment: str, force: bool = False) -> tuple[list[str], str]:
         processor = get_text_processor()
@@ -119,11 +127,11 @@ class SentenceAssembler:
         """Return optional ASR context without forcing any topic/domain.
 
         ASR_INITIAL_PROMPT is intentionally empty by default. This app must
-        transcribe/translate any Dutch video, not bias the model toward a
+        transcribe/translate any video, not bias the model toward a
         specific news/geopolitics frame. If the user wants a per-video hint,
         they can set ASR_INITIAL_PROMPT manually before launching the backend.
 
-        We still append a short window of recent finalized Dutch text to help
+        We still append a short window of recent finalized source text to help
         Whisper keep continuity across audio chunks.
         """
         static_prompt = " ".join([os.getenv("ASR_INITIAL_PROMPT", "").strip(), self.session_prompt.strip()]).strip()
@@ -161,7 +169,7 @@ class SentenceAssembler:
             return [], ""
 
         if force:
-            if processor.ends_with_connector(text) and word_count(text) < self.max_buffer_words:
+            if self._ends_with_connector(processor, text) and word_count(text) < self.max_buffer_words:
                 return [], text
             sentence = self._finish_sentence(text)
             if self._should_drop(sentence):
@@ -179,7 +187,7 @@ class SentenceAssembler:
             start = boundary
             if self._should_drop(candidate):
                 continue
-            if processor.ends_with_connector(candidate):
+            if self._ends_with_connector(processor, candidate):
                 # Keep connector-ending text in the buffer and wait for the next fragment.
                 start = 0
                 completed.clear()
@@ -189,10 +197,13 @@ class SentenceAssembler:
         remainder = normalize_fragment(text[start:]) if start else text
 
         if not completed and (word_count(remainder) >= self.max_buffer_words or len(remainder) >= self.max_buffer_chars):
-            if not processor.ends_with_connector(remainder):
+            if not self._ends_with_connector(processor, remainder):
                 return [self._finish_sentence(remainder)], ""
 
         return completed, remainder
+
+    def _ends_with_connector(self, processor: DutchTextProcessor, text: str) -> bool:
+        return self.source_language == "nl" and processor.ends_with_connector(text)
 
     def _should_drop(self, text: str) -> bool:
         text = normalize_fragment(text)

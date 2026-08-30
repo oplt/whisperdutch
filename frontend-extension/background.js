@@ -2,11 +2,15 @@
   const WINDOW_WIDTH = 920;
   const WINDOW_HEIGHT = 680;
 
-  function buildSubtitleUrl(getUrl, tabId) {
+  function buildSubtitleUrl(getUrl, tabId, autoStart = true) {
     const url = new URL(getUrl("subtitle.html"));
     url.searchParams.set("tabId", String(tabId));
-    url.searchParams.set("autostart", "1");
+    url.searchParams.set("autostart", autoStart ? "1" : "0");
     return url.toString();
+  }
+
+  function supportsAutomaticCapture(chromeApi) {
+    return typeof chromeApi?.tabCapture?.getMediaStreamId === "function";
   }
 
   function findSubtitleTab(windows, subtitlePageUrl) {
@@ -21,7 +25,11 @@
     if (!Number.isInteger(sourceTab?.id)) return null;
 
     const subtitlePageUrl = chromeApi.runtime.getURL("subtitle.html");
-    const targetUrl = buildSubtitleUrl(chromeApi.runtime.getURL, sourceTab.id);
+    const targetUrl = buildSubtitleUrl(
+      chromeApi.runtime.getURL,
+      sourceTab.id,
+      supportsAutomaticCapture(chromeApi)
+    );
     const windows = await chromeApi.windows.getAll({ populate: true });
     const existing = findSubtitleTab(windows, subtitlePageUrl);
 
@@ -48,6 +56,6 @@
     });
   }
 
-  const api = { buildSubtitleUrl, findSubtitleTab, openSubtitleWindow };
+  const api = { buildSubtitleUrl, findSubtitleTab, openSubtitleWindow, supportsAutomaticCapture };
   if (typeof module !== "undefined") module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : self);

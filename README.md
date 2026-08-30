@@ -1,73 +1,373 @@
-# Dutch Live Subtitle Translator
+# Local Live Subtitle Translator
 
-Local Chrome extension + FastAPI backend for live Dutch ASR and English subtitles.
+**Local-first multilingual subtitles and translations for browser video.**
+
+The app captures browser audio, transcribes the selected spoken language with Whisper on your machine, translates it into the language you choose, and displays both in a dedicated subtitle window. Audio, inference, and transcript storage stay on localhost by default—nothing is sent to a cloud subtitle API during normal operation.
+
+Built for people who want readable bilingual subtitles with low latency, without handing browser audio to a remote service.
+
+## Badges
+
+| | |
+| --- | --- |
+| Python | 3.11+ (3.12 tested) |
+| Browser | Chrome / Chromium / Brave / Firefox |
+| Platform | Linux (native messaging host); backend is portable Python |
+
+No license file or CI workflow is present in this repository at the time of writing.
+
+---
+
+## Overview
+
+Streaming video, news, lectures, and podcasts often lack subtitles in the language a viewer needs. This project closes that gap with a local real-time speech pipeline:
+
+1. A browser extension captures **tab audio** (not microphone input).
+2. PCM audio streams over a **local WebSocket** to a FastAPI backend.
+3. The backend segments speech, runs language-directed ASR with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), assembles sentences, and translates them with multilingual **M2M100** through CTranslate2.
+4. Source text and its translation return to the extension and render in a popup subtitle window.
+
+The system is designed for **interactive latency**: partial source-language previews, bounded queues under load, final-over-partial ASR priority, and selectable **fast / balanced / quality** profiles that trade speed against accuracy.
+
+Privacy is a first-class constraint. The backend binds to `127.0.0.1`, the extension only talks to localhost, transcript logging is off by default, and session history is stored in local SQLite files you control.
+
+---
+
+## Features
+
+Verified capabilities in the current codebase:
+
+- **Multilingual live ASR** with faster-whisper (Whisper `small` by default)
+- **Selectable source and translation languages** via CTranslate2 M2M100 (`facebook/m2m100_418M`)
+- **Chrome tab audio capture** through `tabCapture` and an AudioWorklet resampler (→ 16 kHz PCM)
+- **Dual-column subtitle window** — original text and translation with scrollable session history
+- **Processing modes** — `fast`, `balanced`, `quality` (beam size and segmentation differ per mode)
+- **CPU and NVIDIA CUDA** execution for ASR (CUDA selected in extension Advanced settings)
+- **Per-session context hints** — optional topic/terminology prompt sent to ASR
+- **Glossary** — local TSV rules applied before translation (`GLOSSARY_ENABLED=1`)
+- **Practising Vocabulary** — click a source-language word to save it with sentence context (browser `localStorage`)
+- **Automatic reconnect** with backoff when the WebSocket drops
+- **Graceful stop** — flush final audio, finish pending translations, close streams cleanly
+- **Session history** — SQLite persistence of sessions and subtitle rows (configurable)
+- **Transcript export** — TXT, VTT, SRT from the extension settings panel
+- **Local session snapshots** — save/restore transcript state in `localStorage`
+- **Keyboard shortcuts** — start/stop, pause, mute monitor, export
+- **Health, metrics, and debug endpoints** for readiness and pipeline inspection
+- **Adaptive partial ASR** — suppresses overlapping partial inference under load
+- **Bounded ASR/translation queues** with final-segment preservation under backpressure
+
+---
+
+## How It Works
+
+```mermaid
+flowchart LR
+    subgraph Browser
+        A[Tab audio]
+        B[Chrome extension]
+        C[AudioWorklet 16 kHz PCM]
+        D[Subtitle window]
+    end
+
+    subgraph Local host
+        E[Native messaging host]
+        F[FastAPI backend :8000]
+    end
+
+    subgraph Pipeline
+        G[Speech segmenter]
+        H[faster-whisper ASR]
+        I[Sentence assembler]
+        J[CTranslate2 M2M100]
+    end
+
+    A --> B
+    B --> C
+    C -->|WebSocket /ws/subtitles| F
+    B -->|nativeMessaging start/stop| E
+    E --> F
+    F --> G --> H --> I --> J
+    H -->|partial / final JSON| D
+    J -->|translation JSON| D
+```
+
+### Components
+
+| Component | Role |
+| --- | --- |
+| **`frontend-extension/`** | Manifest V3 extension: opens subtitle window, captures tab audio, streams PCM, renders subtitles, manages UI state |
+| **`native-host/`** | Chrome Native Messaging host (`com.polatozgur111.dutch_subtitle_backend`) that starts, stops, and restarts the backend process |
+| **`backend/app/`** | FastAPI service, WebSocket session handler, ASR, translation, metrics, history |
+| **`backend/scripts/`** | Translation model preparation and offline pipeline benchmark |
+| **`docs/`** | Performance baselines, cache evaluation, implementation notes |
+
+### Runtime flow
+
+1. User clicks the extension icon on a video tab → popup subtitle window opens (`subtitle.html?tabId=…&autostart=1`).
+2. Extension asks the native host to launch `backend/run_gpu.sh` (uvicorn on port 8000).
+3. Backend serves `/health/live` immediately; `/health/ready` returns 503 until Whisper and translation models finish loading.
+4. Extension opens `ws://127.0.0.1:8000/ws/subtitles`, sends a `config` message (mode, context prompt, sample rate).
+5. Audio chunks arrive as binary WebSocket frames; the segmenter detects speech boundaries and enqueues ASR jobs.
+6. Partial source text may appear before a sentence is final; finalized sentences are translated and pushed as `final` events.
+7. Optional SQLite history records sessions when `SESSION_HISTORY_ENABLED=1`.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| Browser UI | Vanilla HTML/CSS/JS (Manifest V3, no frontend framework) |
+| Tab capture | Chrome `tabCapture`, `AudioWorklet`, WebSocket client |
+| Backend API | FastAPI, uvicorn, WebSocket |
+| ASR | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2-backed Whisper) |
+| Translation | CTranslate2 converted M2M100 (`facebook/m2m100_418M`); Transformers fallback |
+| Segmentation | NumPy audio buffer, silence/max-duration finalization, sentence assembly |
+| Session storage | SQLite (`session-history.sqlite3`, optional durable translation cache) |
+| Extension storage | `localStorage` (saved sessions, practising vocabulary) |
+| Communication | WebSocket (audio + JSON events); Chrome Native Messaging (backend lifecycle) |
+| Testing | pytest (backend), Node built-in test runner (extension), ruff, mypy |
+
+---
 
 ## Requirements
 
-- Python 3.11+
-- Chrome or Chromium
-- Linux native messaging support
-- Optional NVIDIA GPU with working CUDA for faster Whisper ASR
+### Required
 
-## Backend Setup
+| Requirement | Notes |
+| --- | --- |
+| **Linux** | Native messaging install/uninstall scripts target Linux config paths (`~/.config/google-chrome/…`, Chromium, Brave) |
+| **Python 3.11+** | Use the project virtualenv (`make install-backend`) |
+| **Chrome, Chromium, Brave, or Firefox** | Chromium uses tab capture; Firefox uses a system-audio monitor source |
+| **Disk space** | Whisper model cache + converted M2M100 model (roughly 2–4 GB depending on ASR model size) |
+| **Network (first setup)** | Initial download of Whisper weights and Hugging Face translation model during preparation |
+
+### Optional
+
+| Requirement | Notes |
+| --- | --- |
+| **NVIDIA GPU + CUDA** | Lower ASR latency; select **NVIDIA GPU** in extension Advanced settings |
+| **Node.js 18+** | Running `npm test` / frontend syntax checks only—not needed at runtime |
+| **honcho / foreman / overmind** | Running `make local-dev` via Procfile |
+
+macOS and Windows are not documented or supported for the native messaging host in this repository.
+
+---
+
+## Quick Start
+
+Minimal path to a working local setup on Linux:
+
+```bash
+git clone https://github.com/oplt/whisperdutch.git
+cd whisperdutch
+
+make install-backend
+cp backend/.env.example backend/.env
+make prepare-models
+```
+
+Load the extension and obtain its ID:
+
+1. Open `chrome://extensions` (or `brave://extensions`).
+2. Enable **Developer mode**.
+3. Click **Load unpacked** and select `frontend-extension/`.
+4. Copy the **Extension ID** shown on the card.
+
+Register the native messaging host:
+
+```bash
+# Add to backend/.env (or export before install):
+# DUTCH_SUBTITLE_EXTENSION_ID=<your-extension-id>
+
+bash native-host/install_linux.sh
+```
+
+Use the application:
+
+1. Open a page with audio/video in your browser.
+2. Click the extension icon → the subtitle window opens.
+3. Click **Start listening** if capture did not begin automatically.
+4. Choose the spoken and translation languages under **Settings → General**.
+5. The source transcription and translation appear in the subtitle window.
+
+To run the backend manually (without the extension launcher):
 
 ```bash
 cd backend
-python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+./run_gpu.sh
 ```
 
-For reproducible installs on the tested stack, use the lock file:
+---
+
+## Installation
+
+### Backend
 
 ```bash
-pip install -r requirements.lock
+make install-backend
 ```
 
-Tested stack: Python 3.12, CTranslate2 4.7.1, faster-whisper 1.2.1, CUDA-capable runtime when `ASR_DEVICE=cuda`.
+This creates `backend/.venv`, installs pinned runtime dependencies from `backend/requirements.lock`, and dev tools from `backend/requirements-dev.txt`.
 
-Prepare the CTranslate2 Dutch to English translation model:
+Copy and edit environment defaults:
 
 ```bash
-cd backend
-bash scripts/prepare_translation_ct2.sh
+cp backend/.env.example backend/.env
 ```
 
-Run backend manually:
+Start the API server:
 
 ```bash
-cd backend
-source .venv/bin/activate
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+cd backend && source .venv/bin/activate && ./run_gpu.sh
 ```
 
-Health endpoints:
-
-- `GET http://127.0.0.1:8000/health/live`: process is alive.
-- `GET http://127.0.0.1:8000/health/ready`: ASR and translation models warmed.
-- `GET http://127.0.0.1:8000/debug/device`: device/model readiness and last safe error.
-- `GET http://127.0.0.1:8000/metrics`: readiness and recent session metrics.
-- `GET http://127.0.0.1:8000/debug/sessions`: recent session latency and queue metrics.
-- `GET http://127.0.0.1:8000/debug/session/<client_id>`: one session's metrics.
-- `GET http://127.0.0.1:8000/api/history`: persisted local SQLite session history.
-- `GET http://127.0.0.1:8000/api/history/<client_id>`: one persisted session with subtitles.
-
-## GPU Profile
-
-Recommended RTX 3060 live profile:
+Or from the repository root:
 
 ```bash
-ASR_DEVICE=cuda
-ASR_MODEL=small
-ASR_COMPUTE_TYPE=float16
-TRANSLATION_ENGINE=ctranslate2
-TRANSLATION_DEVICE=cpu
-TRANSLATION_COMPUTE_TYPE=int8
-FAST_END_SILENCE_SECONDS=0.35
-FAST_MAX_SEGMENT_SECONDS=2.8
+make local-dev
 ```
 
-CPU fallback:
+The server listens on `127.0.0.1:8000` by default (`BACKEND_HOST`, `BACKEND_PORT`).
+
+### Translation model
+
+Convert multilingual M2M100 to CTranslate2 (recommended path):
+
+```bash
+make prepare-models
+```
+
+This runs `backend/scripts/prepare_translation_ct2.sh`, producing `backend/models/m2m100-418m-ct2/`.
+
+Ensure these variables match (defaults in `.env.example`):
+
+```bash
+TRANSLATION_ENGINE=auto          # prefers ctranslate2 when model path exists
+TRANSLATION_MODEL_FAMILY=m2m100
+TRANSLATION_MODEL=models/m2m100-418m-ct2
+TRANSLATION_TOKENIZER=facebook/m2m100_418M
+```
+
+If the CTranslate2 model is missing, the backend falls back to Transformers/PyTorch when available.
+
+### Chrome extension
+
+1. Open `chrome://extensions`.
+2. Enable **Developer mode**.
+3. **Load unpacked** → select the `frontend-extension/` directory.
+4. Pin the extension if desired.
+
+The extension requests `activeTab`, `tabs`, `tabCapture`, and `nativeMessaging`. Host permissions are limited to `127.0.0.1` and `localhost`.
+
+### Firefox extension
+
+Build the Firefox package with `make build-firefox`, then load `dist/firefox/manifest.json` from `about:debugging`. Firefox audio capture uses a PipeWire/PulseAudio monitor source. See [Firefox installation](docs/firefox.md) for the full setup.
+
+### Native messaging host
+
+The native host exists because Chromium extensions cannot spawn arbitrary local processes directly. It exposes `start_backend`, `restart_backend`, and `stop_backend` commands over stdin/stdout framing.
+
+Install (Linux):
+
+```bash
+bash native-host/install_linux.sh
+```
+
+The installer writes manifests to Chrome/Chromium/Brave and Firefox native-messaging directories. Chromium requires **`DUTCH_SUBTITLE_EXTENSION_ID`** in one of:
+
+- environment variable
+- `backend/.env`
+- `EXTENSION_ID.txt` at the repository root
+
+Optional: set `DUTCH_SUBTITLE_EXTENSION_PUBLIC_KEY` (or `EXTENSION_PUBLIC_KEY.txt`) to rewrite the manifest `key` field for a stable extension ID across machines.
+
+Uninstall:
+
+```bash
+bash native-host/uninstall_linux.sh
+```
+
+**Important:** If you reload the unpacked extension and the ID changes, update `DUTCH_SUBTITLE_EXTENSION_ID` and re-run `install_linux.sh`.
+
+---
+
+## Configuration
+
+Important options from `backend/.env.example`. See that file for the full list.
+
+### ASR
+
+| Variable | Default | Description |
+| --- | ---: | --- |
+| `ASR_DEVICE` | `cpu` | `cpu`, `cuda`, or `auto` |
+| `ASR_MODEL` | `small` | Whisper model size (`medium` = higher accuracy, more latency) |
+| `ASR_COMPUTE_TYPE` | `int8` | `int8` on CPU; use `float16` on CUDA |
+| `ASR_LANGUAGE` | `nl` | Warmup/default language; session selection is sent over WebSocket |
+| `FAST_ASR_BEAM_SIZE` | `1` | Beam width in **fast** mode |
+| `BALANCED_ASR_BEAM_SIZE` | `2` | Beam width in **balanced** mode |
+| `QUALITY_ASR_BEAM_SIZE` | `3` | Beam width in **quality** mode |
+| `ASR_INITIAL_PROMPT` | *(empty)* | Optional default ASR context hint |
+| `PARTIAL_ASR_ENABLED` | `1` | Enable interim source-language previews |
+| `PARTIAL_ASR_INTERVAL_MS` | `900` | Minimum interval between partial ASR calls |
+
+### Translation
+
+| Variable | Default | Description |
+| --- | ---: | --- |
+| `TRANSLATION_ENGINE` | `auto` | `auto`, `ctranslate2`, or `transformers` |
+| `TRANSLATION_MODEL_FAMILY` | `m2m100` | Multilingual routing behavior (`auto`, `m2m100`, or `marian`) |
+| `TRANSLATION_MODEL` | `models/m2m100-418m-ct2` | CTranslate2 model directory |
+| `TRANSLATION_TOKENIZER` | `facebook/m2m100_418M` | Tokenizer name/path |
+| `TRANSLATION_DEVICE` | `cpu` | Translation runtime device |
+| `TRANSLATION_COMPUTE_TYPE` | `int8` | CTranslate2 compute type |
+| `TRANSLATION_BEAM_SIZE` | `1` | Translation beam search width |
+| `TRANSLATION_CACHE_ITEMS` | `4096` | In-memory LRU translation cache size |
+
+### Segmentation and queues
+
+| Variable | Default | Description |
+| --- | ---: | --- |
+| `FAST_MAX_SEGMENT_SECONDS` | `2.8` | Max utterance length before forced final (fast) |
+| `BALANCED_MAX_SEGMENT_SECONDS` | `5.5` | Max utterance length (balanced) |
+| `QUALITY_MAX_SEGMENT_SECONDS` | `6.5` | Max utterance length (quality) |
+| `PIPELINE_QUEUE_MAX_SEGMENTS` | `3` | ASR queue capacity |
+| `TRANSLATION_QUEUE_MAX_ITEMS` | `4` | Translation queue capacity |
+| `PRE_ROLL_SECONDS` | `0.15` | Audio pre-roll prepended to segments |
+
+### Storage and privacy
+
+| Variable | Default | Description |
+| --- | ---: | --- |
+| `SESSION_HISTORY_ENABLED` | `1` | Persist sessions/subtitles to SQLite |
+| `SESSION_HISTORY_DB` | `logs/session-history.sqlite3` | Session history database path |
+| `LOG_TRANSCRIPT_TEXT` | `0` | Log subtitle text to backend log files |
+| `GLOSSARY_ENABLED` | `0` | Apply `config/glossary.tsv` corrections |
+| `LOCAL_MODELS_ONLY` | `1` | Avoid Hugging Face downloads at translation load time |
+
+### Extension / native host
+
+| Variable | Default | Description |
+| --- | ---: | --- |
+| `DUTCH_SUBTITLE_EXTENSION_ID` | *(empty)* | Required for native messaging install |
+| `DUTCH_SUBTITLE_EXTENSION_PUBLIC_KEY` | *(empty)* | Optional manifest key for stable extension ID |
+
+Per-session ASR context can also be set from the extension **Settings → Advanced → Context hint** without restarting the backend.
+
+---
+
+## Performance Profiles
+
+Three client-selectable modes map to different ASR beam sizes and segmentation timings (see `FAST_*`, `BALANCED_*`, `QUALITY_*` variables).
+
+| Mode | Intended use | Trade-off |
+| --- | --- | --- |
+| **Low latency (`fast`)** | Live viewing, conversational speech | Shorter segments, beam size 1, lowest delay |
+| **Balanced** | Default everyday use | Middle ground between speed and accuracy |
+| **High accuracy (`quality`)** | Difficult audio, formal speech | Longer segments, wider beam, higher latency |
+
+### Recommended CPU profile
 
 ```bash
 ASR_DEVICE=cpu
@@ -77,99 +377,246 @@ TRANSLATION_DEVICE=cpu
 TRANSLATION_COMPUTE_TYPE=int8
 ```
 
-## Runtime Storage
+Measured on CPU/int8 with Whisper `small` (see `docs/performance-baseline.md`): final ASR p50 ≈ 830 ms, translation p50 ≈ 27 ms, total subtitle latency p50 ≈ 1.3 s for real sessions. Figures vary with hardware and audio quality.
 
-Session history is stored locally in SQLite at `backend/logs/session-history.sqlite3` by default. It includes subtitle text for export/review. Set `SESSION_HISTORY_ENABLED=0` if transcript text must not be persisted.
-
-Translation result caching is memory-only by default. To persist translated subtitle text across backend restarts, opt in explicitly:
+### Recommended CUDA profile
 
 ```bash
-TRANSLATION_CACHE_BACKEND=sqlite
-TRANSLATION_CACHE_DB=backend/logs/translation-cache.sqlite3
-TRANSLATION_CACHE_ITEMS=4096
-TRANSLATION_CACHE_TTL_SECONDS=0
+ASR_DEVICE=cuda
+ASR_COMPUTE_TYPE=float16
+TRANSLATION_DEVICE=cpu    # keeps GPU free for Whisper; translation is comparatively cheap
 ```
 
-The durable cache is separate from session history, bounded by item count, and pruned by optional TTL. Set `TRANSLATION_CACHE_BACKEND=memory` to guarantee no translation-cache text is written to disk.
+Select **NVIDIA GPU** in the extension Advanced settings to pass `asr_device=cuda` through the native host (`ASR_DEVICE_OVERRIDE`).
 
-Runtime translation tokenizer/model loading is offline by default (`LOCAL_MODELS_ONLY=1`). Prepare the translation model once with `backend/scripts/prepare_translation_ct2.sh`; the live backend will then avoid network probes and retry delays. Set `LOCAL_MODELS_ONLY=0` only while intentionally downloading a missing translation model.
+---
 
-Audio and translation queues are bounded independently. Partial subtitles may be dropped under load, while finalized audio is preserved by merging adjacent pending segments. `PIPELINE_QUEUE_MAX_SEGMENTS` and `TRANSLATION_QUEUE_MAX_ITEMS` control those bounds.
+## Privacy and Local Processing
 
-## Native Host
+| Data | Default behavior |
+| --- | --- |
+| Tab audio | Captured in-browser, streamed to **localhost only** via WebSocket |
+| Cloud APIs | No cloud ASR or translation service in the default pipeline |
+| Model downloads | Whisper weights and M2M100 may download from Hugging Face / faster-whisper caches on first run |
+| Backend logs | Daily rotating logs under `backend/logs/`; **transcript text excluded** unless `LOG_TRANSCRIPT_TEXT=1` |
+| Session history | SQLite at `backend/logs/session-history.sqlite3` when enabled |
+| Translation cache | In-memory LRU by default; optional durable SQLite cache (off unless configured) |
+| Extension transcript | Held in memory; explicit **Save** writes to `localStorage` |
+| Practising vocabulary | Stored in browser `localStorage` only |
 
-Set the extension id, then install native host:
+The app is **local-first**, not strictly air-gapped: initial model setup and Hugging Face tokenizer loading may require network access unless models are pre-provisioned and `LOCAL_MODELS_ONLY=1` is satisfied.
+
+Disable backend transcript persistence:
 
 ```bash
-export DUTCH_SUBTITLE_EXTENSION_ID=<chrome-extension-id>
-bash native-host/install_linux.sh
+SESSION_HISTORY_ENABLED=0
+LOG_TRANSCRIPT_TEXT=0
 ```
 
-The live subtitle window uses native messaging to start `backend/run_gpu.sh`. Re-run install after the extension id changes.
+---
 
-Native host commands:
+## Subtitle Export and History
 
-- `start_backend`: starts backend, choosing the requested/free port.
-- `stop_backend`: stops the native-host-managed backend process.
-- `restart_backend`: stops then starts backend and returns fresh URLs.
+### Export formats
 
-Backend port defaults to `8000`. Set `DUTCH_SUBTITLE_BACKEND_PORT` or send `port` in the native message to request another port. If the requested port is occupied, the native host picks the next free local port and returns `base_url` plus `ws_url`; the popup stores those for the subtitle window.
+From **Settings → Advanced → Transcript session**:
 
-## Chrome Extension
+| Format | Description |
+| --- | --- |
+| **TXT** | Timestamped plain text (`[mm:ss.ms]` blocks) |
+| **VTT** | WebVTT with cue timestamps |
+| **SRT** | SubRip subtitles |
 
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Load unpacked extension from `frontend-extension/`.
-4. Open a tab with Dutch audio and click the extension icon.
-5. The subtitle window opens, starts the backend if needed, and begins capture automatically.
+Keyboard shortcut: **`E`** exports TXT when the subtitle window is focused.
 
-## Product Features
+### History layers
 
-- Low latency / Balanced / High accuracy presets.
-- Per-video context hint for names, topics, jargon.
-- Glossary editor backed by `backend/config/glossary.tsv`.
-- English target language only unless more translation models are configured.
-- Monitor volume/mute.
-- Reconnect after backend restart.
-- Export `.txt`, `.vtt`, `.srt`.
-- Shortcuts: `space` start/stop, `f` font cycle, `m` mute, `e` export TXT, `h` history.
+| Layer | Location | Scope |
+| --- | --- | --- |
+| Live subtitle feed | Subtitle window | Current session, scrollable |
+| Saved sessions | Extension `localStorage` | Manual save/restore in settings |
+| Backend session history | SQLite | API at `/api/history` when enabled |
 
-## Quality Checks
+---
+
+## API and Observability
+
+HTTP base URL: `http://127.0.0.1:8000`
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health/live` | Process is up (available before models finish loading) |
+| `GET /health/ready` | Models loaded and warmed (`503` until ready) |
+| `GET /debug/device` | ASR/translation device info, pipeline flags, startup phase |
+| `GET /metrics` | Recent session metrics and translation cache stats |
+| `GET /debug/sessions` | Active/recent WebSocket session summaries |
+| `GET /debug/session/{client_id}` | Single session metrics |
+| `GET /api/history` | Recent persisted sessions |
+| `GET /api/history/{client_id}` | Full session with subtitle rows |
+| `DELETE /api/history/{client_id}` | Remove a persisted session |
+| `GET/PUT /api/glossary` | Read/write glossary rules |
+| `GET/PUT /api/privacy` | Toggle transcript logging |
+| `GET /api/logs/recent` | Tail backend log file |
+| `POST /api/logs/client` | Extension diagnostic events |
+| `POST /api/cache/translation/clear` | Clear translation cache |
+| `WS /ws/subtitles` | Binary PCM in; JSON subtitle events out |
+
+WebSocket JSON event types include `partial`, `final_pending`, `final`, `flushed`, `error`, and `config_error`. Connections are rejected with code `1013` until `/health/ready` would succeed.
+
+---
+
+## Project Structure
+
+```text
+whisperdutch/
+├── backend/
+│   ├── app/                 # FastAPI app, ASR, translation, WebSocket sessions
+│   ├── scripts/             # Model prep, offline benchmark
+│   ├── tests/               # pytest suite
+│   ├── logs/                # Runtime logs, SQLite databases (created at run time)
+│   ├── models/              # Converted CTranslate2 translation model
+│   ├── run_gpu.sh           # Backend entrypoint
+│   ├── requirements.txt     # Runtime Python dependencies
+│   └── .env.example         # Configuration template
+├── frontend-extension/
+│   ├── app/                 # Subtitle UI modules (state, capture, WebSocket, vocabulary)
+│   ├── audio/worklet.js     # PCM resampling worklet
+│   ├── test/                # Node test suite
+│   └── manifest.json
+├── native-host/
+│   ├── start_backend_host.py
+│   ├── install_linux.sh
+│   └── uninstall_linux.sh
+├── docs/                    # Performance baselines and engineering notes
+├── scripts/check.sh         # Full quality gate
+├── Makefile
+└── Procfile                 # `make local-dev` backend launcher
+```
+
+---
+
+## Development
+
+### Quality checks
+
+Run the full gate (compile, pytest, extension syntax check, npm test, ruff, mypy):
 
 ```bash
-bash scripts/check.sh
+make check
 ```
 
-Runs Python compile, pytest, frontend syntax checks, and Node tests. If `ruff` or `mypy` are installed, the script runs them too.
+Individual steps:
 
-## Benchmark
+```bash
+# Backend tests
+cd backend && source .venv/bin/activate
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests
 
-Run ASR + translation without Chrome using a 16 kHz 16-bit PCM WAV:
+# Frontend tests
+npm test
+
+# Lint / types
+ruff check backend/app backend/tests native-host/start_backend_host.py
+mypy backend/app native-host/start_backend_host.py
+```
+
+### Backend-only development
 
 ```bash
 cd backend
 source .venv/bin/activate
-python scripts/benchmark_pipeline.py sample.wav --mode fast --segment-seconds 3 --json
+./run_gpu.sh
 ```
 
-The output includes p50/p95/max ASR latency, translation latency, total latency, and realtime factor.
+Startup status is written to `backend/logs/startup-status.json`. Tail logs at `backend/logs/backend-YYYY-MM-DD.log`.
 
-## Model Artifacts
+---
 
-Generated models are ignored by git under `backend/models/`. Recreate them with:
+## Testing
+
+| Suite | Command | Covers |
+| --- | --- | --- |
+| Backend | `pytest backend/tests` | ASR config, audio segmentation, WebSocket queue priority, translation cache, API startup, metrics, history, native host helpers, concurrency |
+| Extension | `npm test` | WebSocket client, state machine, backend client, audio worklet resampling, vocabulary store, settings |
+
+No coverage percentage is published in this repository.
+
+---
+
+## Benchmarking
+
+### Offline pipeline benchmark
+
+Measure ASR + translation latency on a 16 kHz WAV file:
 
 ```bash
 cd backend
-bash scripts/prepare_translation_ct2.sh
+source .venv/bin/activate
+python scripts/benchmark_pipeline.py path/to/audio.wav --mode fast
+python scripts/benchmark_pipeline.py path/to/audio.wav --mode balanced --json
 ```
 
-Do not commit `model.bin` or other generated model files. Use Git LFS or an external artifact store only if model versioning becomes required.
+Reports per-segment and summary **ASR latency**, **translation latency**, **total latency**, and **realtime factor** (p50/p95/max in summary).
+
+### Documented baselines
+
+| Document | Content |
+| --- | --- |
+| `docs/performance-baseline.md` | Pre-optimization measurements (CPU/int8, Whisper small) |
+| `docs/performance-after.md` | Post-optimization comparison |
+| `docs/backend-performance.md` | Segmenter, partial ASR, and ASR mode microbenchmarks |
+| `docs/translation-cache-evaluation.md` | Cache hit ratios on real subtitle corpus |
+
+### Frontend worklet benchmark
+
+```bash
+npm run benchmark:worklet
+```
+
+---
 
 ## Troubleshooting
 
-- Backend not ready: open `/health/ready` and `/debug/device`; model load errors appear as safe codes.
-- `model_missing`: run `backend/scripts/prepare_translation_ct2.sh` and verify ASR model download access.
-- `cuda_unavailable`: use CPU env vars or fix NVIDIA driver/CUDA runtime.
-- Extension cannot start backend: run `native-host/install_linux.sh` with the current extension id.
-- No subtitles: check backend logs in `backend/logs/`, verify tab audio permission, and try Low latency mode.
-- Browser memory grows or audio lags: backend is slower than realtime; the subtitle window drops audio when WebSocket buffering exceeds threshold and reports it in Audio status.
+| Problem | Likely cause / fix |
+| --- | --- |
+| **Native messaging host not found** | Run `bash native-host/install_linux.sh` with correct `DUTCH_SUBTITLE_EXTENSION_ID`; restart browser |
+| **Extension ID mismatch** | Reloading unpacked extension may change ID — update `.env` and re-install native host |
+| **Backend not ready / 503** | Models still loading — wait for `/health/ready`; check `backend/logs/` and `startup-status.json` |
+| **CUDA unavailable** | Install CUDA-enabled CTranslate2; verify with `ctranslate2.get_cuda_device_count()`; or use CPU mode |
+| **Translation model missing** | Run `make prepare-models`; confirm `backend/models/m2m100-418m-ct2/` exists |
+| **Selected pair is unsupported** | Your existing `.env` may still select OPUS-MT; follow [multilingual model setup](docs/multilingual.md) and restart |
+| **No tab audio / no subtitles** | Start capture from the **same tab** that plays audio; check browser tab-mute and capture permissions |
+| **Subtitles lag behind speech** | Switch to **Low latency** mode; enable CUDA; reduce `ASR_MODEL`; check CPU load and queue drops in `/metrics` |
+| **Whisper download fails** | Ensure network access for first model fetch; check Hugging Face / cache permissions |
+| **WebSocket disconnects** | Extension auto-reconnects; if persistent, restart backend from Advanced settings |
+| **Empty practising vocabulary meaning** | Click words after the translation arrives; partial-only lines have no sentence translation yet |
+
+---
+
+## Limitations
+
+- **Language quality** — Accuracy and speed vary by language pair; smaller M2M100 and Whisper models favor responsiveness over maximum quality.
+- **Browser integration** — Chromium captures tab audio directly; Firefox requires choosing a system-audio monitor source.
+- **Native host** — Install scripts are Linux-specific; other platforms need manual Native Messaging setup.
+- **Latency** — CPU-only ASR on long utterances can exceed real-time; GPU improves headroom substantially.
+- **Accuracy** — Depends on tab audio quality, background noise, and proper tab selection (capture the tab that actually plays audio).
+- **Word-level vocabulary meanings** — Practising Vocabulary stores the sentence translation as context, not a dictionary gloss per word.
+- **No packaged releases** — Expect to load the extension unpacked and run the backend from source.
+
+---
+
+## Contributing
+
+Contributions are welcome. Before opening a pull request:
+
+1. Run `make check`.
+2. Keep changes focused and covered by tests where behavior is non-obvious.
+3. Update `backend/.env.example` if you add configuration surface.
+
+---
+
+## Further Reading
+
+- [`PRODUCT.md`](PRODUCT.md) — product intent and UX principles
+- [`docs/final-implementation-report.md`](docs/final-implementation-report.md) — architecture and optimization summary
+- [`backend/.env.example`](backend/.env.example) — complete configuration reference

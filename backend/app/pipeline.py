@@ -24,10 +24,11 @@ def transcribe_and_collect_sentences(
     start = time.perf_counter()
     asr = get_asr_engine()
 
+    sentence_assembler.configure(config.source_lang, config.context_prompt)
     prompt = sentence_assembler.context_prompt()
-    transcription = asr.transcribe_dutch_result(audio, prompt=prompt, mode=config.mode)
-    dutch_fragment = transcription.text
-    sentences, _buffer = sentence_assembler.add_fragment(dutch_fragment, force=force)
+    transcription = asr.transcribe_result(audio, language=config.source_lang, prompt=prompt, mode=config.mode)
+    source_fragment = transcription.text
+    sentences, _buffer = sentence_assembler.add_fragment(source_fragment, force=force)
     asr_latency_ms = int((time.perf_counter() - start) * 1000)
 
     audio_seconds = round(float(len(audio)) / float(config.sample_rate), 2)
@@ -35,7 +36,7 @@ def transcribe_and_collect_sentences(
     meta = {
         "asr_latency_ms": asr_latency_ms,
         "audio_seconds": audio_seconds,
-        "fragment": dutch_fragment,
+        "fragment": source_fragment,
         "realtime_factor": realtime_factor,
         "quality": transcription.quality,
     }
@@ -46,14 +47,14 @@ def transcribe_and_collect_sentences(
         asr_latency_ms,
         realtime_factor,
         len(sentences),
-        preview_text(dutch_fragment),
+        preview_text(source_fragment),
     )
     return sentences, meta
 
 
 def transcribe_partial(audio: np.ndarray, config: ClientConfig, prompt: str | None) -> tuple[str, dict[str, Any]]:
     start = time.perf_counter()
-    result = get_asr_engine().transcribe_dutch_result(audio, prompt=prompt, mode="fast")
+    result = get_asr_engine().transcribe_result(audio, language=config.source_lang, prompt=prompt, mode="fast")
     latency_ms = int((time.perf_counter() - start) * 1000)
     audio_seconds = round(float(len(audio)) / float(config.sample_rate), 2)
     return result.text, {"latency_ms": latency_ms, "audio_seconds": audio_seconds, "quality": result.quality}

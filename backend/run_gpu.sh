@@ -59,7 +59,7 @@ export QUALITY_ASR_BEAM_SIZE="${QUALITY_ASR_BEAM_SIZE:-3}"
 export ASR_CONDITION_ON_PREVIOUS_TEXT="${ASR_CONDITION_ON_PREVIOUS_TEXT:-0}"
 export ASR_INITIAL_PROMPT="${ASR_INITIAL_PROMPT:-}"
 
-# Stable sentence construction with optional partial Dutch preview.
+# Stable sentence construction with an optional partial source-language preview.
 export SENTENCE_MODE="${SENTENCE_MODE:-1}"
 export PARTIAL_ASR_ENABLED="${PARTIAL_ASR_ENABLED:-1}"
 export PARTIAL_ASR_INTERVAL_MS="${PARTIAL_ASR_INTERVAL_MS:-900}"
@@ -85,9 +85,10 @@ export PRE_ROLL_SECONDS="${PRE_ROLL_SECONDS:-0.15}"
 # Translation. Recommended: run ./scripts/prepare_translation_ct2.sh once.
 # CPU int8 avoids GPU contention with Whisper and keeps translation reliable.
 export TRANSLATION_ENGINE="${TRANSLATION_ENGINE:-auto}"
-export TRANSLATION_MODEL="${TRANSLATION_MODEL:-models/opus-mt-nl-en-ct2}"
-export TRANSLATION_TOKENIZER="${TRANSLATION_TOKENIZER:-Helsinki-NLP/opus-mt-nl-en}"
-export TRANSFORMERS_TRANSLATION_MODEL="${TRANSFORMERS_TRANSLATION_MODEL:-Helsinki-NLP/opus-mt-nl-en}"
+export TRANSLATION_MODEL_FAMILY="${TRANSLATION_MODEL_FAMILY:-auto}"
+export TRANSLATION_MODEL="${TRANSLATION_MODEL:-models/m2m100-418m-ct2}"
+export TRANSLATION_TOKENIZER="${TRANSLATION_TOKENIZER:-facebook/m2m100_418M}"
+export TRANSFORMERS_TRANSLATION_MODEL="${TRANSFORMERS_TRANSLATION_MODEL:-facebook/m2m100_418M}"
 export TRANSLATION_DEVICE="${TRANSLATION_DEVICE:-cpu}"
 export TRANSLATION_COMPUTE_TYPE="${TRANSLATION_COMPUTE_TYPE:-int8}"
 export TRANSLATION_BEAM_SIZE="${TRANSLATION_BEAM_SIZE:-1}"

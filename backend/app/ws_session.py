@@ -14,12 +14,14 @@ from pydantic import ValidationError
 from .audio import SpeechSegmenter, pcm16le_to_float32
 from .errors import map_exception
 from .history import session_history_store
+from .languages import UnsupportedLanguagePairError
 from .logger import get_logger, preview_text
 from .metrics import SessionMetrics, session_metrics_store
 from .pipeline import adapt_segmenter, transcribe_and_collect_sentences, transcribe_partial, translate_many_sentences
 from .schemas import ClientConfig, ClientConfigMessage
 from .security import origin_allowed
 from .sentences import SentenceAssembler
+from .translator import get_translation_engine
 
 logger = get_logger("ws")
 
@@ -66,7 +68,7 @@ class SubtitleWebSocketSession:
         self.config = ClientConfig()
         self.segmenter = SpeechSegmenter(sample_rate=self.config.sample_rate)
         self.segmenter.set_mode(self.config.mode)
-        self.sentence_assembler = SentenceAssembler()
+        self.sentence_assembler = SentenceAssembler(source_language=self.config.source_lang)
         self.queue: asyncio.Queue[SegmentJob] = asyncio.Queue(maxsize=max(1, int(os.getenv("PIPELINE_QUEUE_MAX_SEGMENTS", "3"))))
         self.translation_queue: asyncio.Queue[TranslationJob] = asyncio.Queue(
             maxsize=max(1, int(os.getenv("TRANSLATION_QUEUE_MAX_ITEMS", "4")))
@@ -126,6 +128,9 @@ class SubtitleWebSocketSession:
         while True:
             message = await self.websocket.receive()
 
+            if message.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect(code=int(message.get("code") or 1000))
+
             if "text" in message and message["text"] is not None:
                 await self._handle_text(message["text"])
                 continue
@@ -181,8 +186,19 @@ class SubtitleWebSocketSession:
             )
             return
 
+        try:
+            get_translation_engine().validate_pair(parsed.source_lang, parsed.target_lang)
+        except UnsupportedLanguagePairError as exc:
+            await self._send_json(
+                {
+                    "type": "config_error",
+                    "code": "unsupported_language_pair",
+                    "message": str(exc),
+                }
+            )
+            return
+
         self.config = parsed
-        self.sentence_assembler.session_prompt = self.config.context_prompt
         self.segmenter.sample_rate = self.config.sample_rate
         self.segmenter.set_mode(self.config.mode)
         self.metrics.mode = self.config.mode
@@ -216,7 +232,8 @@ class SubtitleWebSocketSession:
     def _partial_suppression_reason(self, now: float) -> str | None:
         if self.flush_requested:
             return "flush_requested"
-        if any(job.kind == "final" for job in self.queue._queue):
+        queued_jobs = getattr(self.queue, "_queue", ())
+        if any(job.kind == "final" for job in queued_jobs):
             return "final_queued"
         if self._processing_kind is not None:
             return "asr_busy"
@@ -350,7 +367,12 @@ class SubtitleWebSocketSession:
             return
         self.stats.partial_inferences += 1
         self.metrics.partial_inferences = self.stats.partial_inferences
-        prompt = self.sentence_assembler.context_prompt()
+        assembler_language = getattr(self.sentence_assembler, "source_language", job.config.source_lang)
+        if assembler_language == job.config.source_lang:
+            self.sentence_assembler.session_prompt = job.config.context_prompt
+            prompt = self.sentence_assembler.context_prompt()
+        else:
+            prompt = job.config.context_prompt or None
         try:
             text, meta = await asyncio.to_thread(transcribe_partial, job.audio, job.config, prompt)
         except Exception as exc:
@@ -363,6 +385,9 @@ class SubtitleWebSocketSession:
             {
                 "type": "partial",
                 "dutch": text,
+                "source_text": text,
+                "source_lang": job.config.source_lang,
+                "target_lang": job.config.target_lang,
                 "latency_ms": meta["latency_ms"],
                 "audio_seconds": meta["audio_seconds"],
                 "mode": job.config.mode,
@@ -451,6 +476,7 @@ class SubtitleWebSocketSession:
                     "target_lang": config.target_lang,
                     "mode": config.mode,
                     "dutch": sentence,
+                    "source_text": sentence,
                     "translation": "Translating...",
                     "asr_latency_ms": asr_latency_ms,
                     "queue_delay_ms": queue_delay_ms,
@@ -528,6 +554,7 @@ class SubtitleWebSocketSession:
                 "target_lang": config.target_lang,
                 "mode": config.mode,
                 "dutch": item["sentence"],
+                "source_text": item["sentence"],
                 "translation": translation,
                 "asr_latency_ms": asr_latency_ms,
                 "queue_delay_ms": queue_delay_ms,

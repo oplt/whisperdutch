@@ -33,3 +33,15 @@ def test_context_prompt_includes_session_hint() -> None:
     assembler = SentenceAssembler()
     assembler.session_prompt = "Ajax Champions League"
     assert "Ajax Champions League" in (assembler.context_prompt() or "")
+
+
+def test_language_change_clears_context_and_disables_dutch_connector_rule() -> None:
+    assembler = SentenceAssembler(min_final_words=2)
+    assembler.add_fragment("Ik kom morgen", force=False)
+
+    assembler.configure("en", "English lecture")
+    sentences, buffer = assembler.add_fragment("We learn together and", force=True)
+
+    assert sentences == ["We learn together and."]
+    assert buffer == ""
+    assert "Ik kom morgen" not in (assembler.context_prompt() or "")

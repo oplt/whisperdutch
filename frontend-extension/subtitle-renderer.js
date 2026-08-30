@@ -65,7 +65,28 @@
     return `${rows.map((item, index) => `${index + 1}\n${formatTime(item.startMs, true).replace(".", ",")} --> ${formatTime(item.endMs, true).replace(".", ",")}\n${item.dutch}\n${item.translation}`.trim()).join("\n\n")}\n`;
   }
 
-  const api = { normalizeText, mergeByWordOverlap, stabilizePartial, formatTime, toTxt, toVtt, toSrt };
+  function splitDutchText(text) {
+    const value = String(text || "");
+    if (!value) return [];
+    const parts = [];
+    const pattern = /[\p{L}\p{N}'’-]+/gu;
+    let lastIndex = 0;
+    let match = pattern.exec(value);
+    while (match) {
+      if (match.index > lastIndex) {
+        parts.push({ type: "text", value: value.slice(lastIndex, match.index) });
+      }
+      parts.push({ type: "word", value: match[0] });
+      lastIndex = match.index + match[0].length;
+      match = pattern.exec(value);
+    }
+    if (lastIndex < value.length) {
+      parts.push({ type: "text", value: value.slice(lastIndex) });
+    }
+    return parts;
+  }
+
+  const api = { normalizeText, mergeByWordOverlap, stabilizePartial, formatTime, toTxt, toVtt, toSrt, splitDutchText };
   root.SubtitleRenderer = api;
   if (typeof module !== "undefined") module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);

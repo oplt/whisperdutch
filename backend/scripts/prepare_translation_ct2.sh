@@ -10,8 +10,8 @@ if [ -d ".venv" ]; then
   source ".venv/bin/activate"
 fi
 
-MODEL_NAME="${MODEL_NAME:-Helsinki-NLP/opus-mt-nl-en}"
-OUTPUT_DIR="${OUTPUT_DIR:-models/opus-mt-nl-en-ct2}"
+MODEL_NAME="${MODEL_NAME:-facebook/m2m100_418M}"
+OUTPUT_DIR="${OUTPUT_DIR:-models/m2m100-418m-ct2}"
 QUANTIZATION="${QUANTIZATION:-int8}"
 
 python -m pip install "ctranslate2>=4.6.0" "transformers>=4.44,<5" sentencepiece sacremoses huggingface-hub
@@ -29,6 +29,7 @@ CTranslate2 translation model is ready:
 
 Use:
   export TRANSLATION_ENGINE=ctranslate2
+  export TRANSLATION_MODEL_FAMILY=m2m100
   export TRANSLATION_MODEL=$OUTPUT_DIR
   export TRANSLATION_TOKENIZER=$MODEL_NAME
 EOF

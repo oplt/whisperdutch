@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .asr import get_asr_engine
 from .errors import map_exception
 from .history import session_history_store
+from .languages import DEFAULT_SOURCE_LANGUAGE, DEFAULT_TARGET_LANGUAGE, language_catalog
 from .logger import current_log_file, get_logger, kv, should_log_text, tail_log
 from .metrics import session_metrics_store
 from .model_runtime import lifespan, runtime_state
@@ -32,7 +33,7 @@ def _translation_cache_metrics() -> dict[str, Any]:
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Dutch Live Subtitle Translator",
+        title="Local Live Subtitle Translator",
         version="0.8.0-low-latency",
         lifespan=lifespan,
     )
@@ -57,9 +58,21 @@ def register_routes(app: FastAPI) -> None:
         return {
             "ok": True,
             "live": True,
-            "service": "dutch-live-subtitle-translator",
+            "service": "local-live-subtitle-translator",
             "version": "0.8.0-low-latency",
             "websocket": "/ws/subtitles",
+        }
+
+    @app.get("/api/languages")
+    def languages() -> dict[str, Any]:
+        capabilities: dict[str, Any] | None = None
+        if runtime_state.is_ready():
+            capabilities = get_translation_engine().capabilities()
+        return {
+            "languages": language_catalog(),
+            "default_source": DEFAULT_SOURCE_LANGUAGE,
+            "default_target": DEFAULT_TARGET_LANGUAGE,
+            "translation": capabilities,
         }
 
     @app.get("/health/ready")

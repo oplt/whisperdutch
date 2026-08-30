@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from faster_whisper import WhisperModel
 
+from .languages import DEFAULT_SOURCE_LANGUAGE, validate_language
 from .logger import get_logger
 
 logger = get_logger("asr")
@@ -93,19 +94,42 @@ class TranscriptionEngine:
     def warmup(self) -> None:
         logger.info("asr_warmup_started")
         audio = np.zeros(16000, dtype=np.float32)
-        _ = self.transcribe_dutch(audio, mode="fast")
+        _ = self.transcribe(audio, language=self.default_language, mode="fast")
         logger.info("asr_warmup_completed")
 
     def transcribe_dutch(self, audio_16k: np.ndarray, prompt: str | None = None, mode: str = "balanced") -> str:
-        return self.transcribe_dutch_result(audio_16k, prompt=prompt, mode=mode).text
+        """Backward-compatible Dutch transcription helper."""
+        return self.transcribe(audio_16k, language="nl", prompt=prompt, mode=mode)
 
     def transcribe_dutch_result(self, audio_16k: np.ndarray, prompt: str | None = None, mode: str = "balanced") -> TranscriptionResult:
+        """Backward-compatible Dutch transcription helper."""
+        return self.transcribe_result(audio_16k, language="nl", prompt=prompt, mode=mode)
+
+    def transcribe(
+        self,
+        audio_16k: np.ndarray,
+        *,
+        language: str = DEFAULT_SOURCE_LANGUAGE,
+        prompt: str | None = None,
+        mode: str = "balanced",
+    ) -> str:
+        return self.transcribe_result(audio_16k, language=language, prompt=prompt, mode=mode).text
+
+    def transcribe_result(
+        self,
+        audio_16k: np.ndarray,
+        *,
+        language: str = DEFAULT_SOURCE_LANGUAGE,
+        prompt: str | None = None,
+        mode: str = "balanced",
+    ) -> TranscriptionResult:
         """Transcribe one 16 kHz float32 mono audio segment."""
         if audio_16k.size < 1600:
             return TranscriptionResult("", {"level": "empty", "reason": "too_short"})
 
         mode = (mode or "balanced").lower()
         decode = self.decode_configs.get(mode, self.decode_configs["balanced"])
+        language = validate_language(language)
 
         logger.debug(
             "asr_transcribe_started samples=%s mode=%s beam_size=%s prompt_present=%s",
@@ -116,7 +140,7 @@ class TranscriptionEngine:
         )
         segments, _info = self.model.transcribe(
             audio_16k,
-            language=decode.language,
+            language=language,
             task="transcribe",
             beam_size=decode.beam_size,
             best_of=1,
@@ -139,6 +163,7 @@ class TranscriptionEngine:
         language = os.getenv("ASR_LANGUAGE", "nl").strip().lower()
         if not language:
             raise ValueError("ASR_LANGUAGE must not be empty")
+        self.default_language = validate_language(language)
         no_speech = _bounded_env_float("ASR_NO_SPEECH_THRESHOLD", 0.6, minimum=0.0, maximum=1.0)
         compression = _bounded_env_float("ASR_COMPRESSION_RATIO_THRESHOLD", 2.4, minimum=0.01)
         previous_text = os.getenv("ASR_CONDITION_ON_PREVIOUS_TEXT", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -148,7 +173,7 @@ class TranscriptionEngine:
             "quality": _positive_env_int("QUALITY_ASR_BEAM_SIZE", 3),
         }
         return {
-            mode: ASRDecodeConfig(language, beam, no_speech, compression, previous_text)
+            mode: ASRDecodeConfig(self.default_language, beam, no_speech, compression, previous_text)
             for mode, beam in beams.items()
         }
 

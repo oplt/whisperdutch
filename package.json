@@ -1,5 +1,6 @@
 {
   "scripts": {
+    "build:firefox": "bash scripts/build_firefox.sh",
     "test": "node --test frontend-extension/test/*.test.js",
     "check": "npm test",
     "benchmark:worklet": "node frontend-extension/test/worklet-benchmark.js"

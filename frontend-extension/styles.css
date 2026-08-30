@@ -44,14 +44,16 @@
 html,
 body {
   min-width: 320px;
-  min-height: 100%;
+  height: 100%;
   margin: 0;
+  overflow: hidden;
   background: var(--canvas);
   color: var(--text);
 }
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 button,
@@ -95,12 +97,15 @@ summary:focus-visible {
 .app-shell {
   container-type: inline-size;
   display: grid;
-  grid-template-rows: auto minmax(300px, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 24px;
   width: min(100%, 1040px);
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   margin: 0 auto;
   padding: 24px 32px 32px;
+  overflow: hidden;
 }
 
 .topbar,
@@ -118,6 +123,14 @@ summary:focus-visible {
 .setting-block,
 .dialog-header {
   justify-content: space-between;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .status {
@@ -172,32 +185,112 @@ summary:focus-visible {
   text-underline-offset: 3px;
 }
 
-.subtitle-stage {
+.subtitle-feed-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.subtitle-feed {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 2px;
+}
+
+.subtitle-feed::-webkit-scrollbar {
+  width: 10px;
+}
+
+.subtitle-feed::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.subtitle-feed::-webkit-scrollbar-thumb {
+  border: 2px solid var(--canvas);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--text-muted) 55%, transparent);
+}
+
+.subtitle-row {
   display: grid;
-  align-content: center;
-  gap: 28px;
-  max-width: 920px;
-  width: 100%;
-  margin: 0 auto;
-  padding: 36px 0 20px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px 32px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
 }
 
-.current-dutch,
-.current-translation {
-  max-width: 30ch;
+.subtitle-row:first-child {
+  padding-top: 4px;
+}
+
+.subtitle-row.is-live {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 8px;
+  padding-bottom: 18px;
+  border-bottom-width: 2px;
+  background: var(--canvas);
+  box-shadow: 0 8px 12px -10px color-mix(in oklch, var(--text) 18%, transparent);
+}
+
+.subtitle-row p {
   margin: 0;
-  text-wrap: balance;
+  text-wrap: pretty;
 }
 
-.current-dutch {
+.subtitle-dutch {
   color: var(--text-strong);
+  font-size: 0.9375rem;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.subtitle-word {
+  display: inline;
+  margin: 0;
+  padding: 0 1px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  text-align: inherit;
+}
+
+.subtitle-word:hover,
+.subtitle-word:focus-visible {
+  background: color-mix(in oklch, var(--accent) 16%, transparent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--accent) 55%, transparent);
+  text-underline-offset: 3px;
+}
+
+.subtitle-translation {
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.subtitle-row.is-live .subtitle-dutch {
   font-size: var(--dutch-size);
   font-weight: 720;
   letter-spacing: -0.025em;
   line-height: 1.12;
 }
 
-.current-translation {
+.subtitle-row.is-live .subtitle-translation {
   color: var(--text);
   font-size: var(--translation-size);
   font-weight: 430;
@@ -205,12 +298,12 @@ summary:focus-visible {
   line-height: 1.22;
 }
 
-.current-translation[data-pending="true"],
-.history-translation[data-pending="true"] {
+.subtitle-translation[data-pending="true"] {
   color: var(--text-muted);
 }
 
 .level-track {
+  flex: 0 0 auto;
   overflow: hidden;
   width: min(240px, 45%);
   height: 2px;
@@ -236,6 +329,16 @@ summary:focus-visible {
 
 .primary-actions {
   justify-content: center;
+}
+
+.capture-help {
+  flex-basis: 100%;
+  max-width: 720px;
+  margin: 2px auto 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .button,
@@ -290,11 +393,6 @@ summary:focus-visible {
   font-size: 0.8125rem;
 }
 
-.history-panel {
-  border-top: 1px solid var(--line);
-}
-
-.history-panel > summary,
 .settings-group > summary,
 .nested-details > summary {
   min-height: 44px;
@@ -302,45 +400,6 @@ summary:focus-visible {
   color: var(--text-muted);
   font-size: 0.875rem;
   font-weight: 700;
-}
-
-.history-panel > summary {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.summary-meta {
-  font-size: 0.75rem;
-  font-weight: 550;
-}
-
-.history-list {
-  display: grid;
-  padding-bottom: 20px;
-}
-
-.history-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 28px;
-  padding: 16px 0;
-  border-top: 1px solid var(--line);
-}
-
-.history-row p {
-  margin: 0;
-  font-size: 0.9375rem;
-  line-height: 1.45;
-}
-
-.history-dutch {
-  color: var(--text-strong);
-  font-weight: 650;
-}
-
-.history-translation {
-  color: var(--text-muted);
 }
 
 .settings-dialog {
@@ -532,26 +591,71 @@ input[type="range"] {
   font-size: 0.875rem;
 }
 
+.vocabulary-list {
+  display: grid;
+  gap: 0;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+}
+
+.vocabulary-entry {
+  display: grid;
+  gap: 8px;
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+
+.vocabulary-entry-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.vocabulary-entry-word {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 1.125rem;
+  font-weight: 750;
+}
+
+.vocabulary-entry-meaning {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 450;
+  line-height: 1.4;
+}
+
+.vocabulary-entry-sentence {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+
+.vocabulary-remove {
+  justify-self: start;
+  min-height: 32px;
+  padding-inline: 0;
+}
+
 @container (max-width: 620px) {
   .app-shell {
     gap: 18px;
     padding: 18px;
   }
 
-  .subtitle-stage {
-    gap: 20px;
-    padding-top: 22px;
-  }
-
-  .current-dutch {
+  .subtitle-row.is-live .subtitle-dutch {
     font-size: min(var(--dutch-size), 11vw);
   }
 
-  .current-translation {
+  .subtitle-row.is-live .subtitle-translation {
     font-size: min(var(--translation-size), 9vw);
   }
 
-  .history-row,
+  .subtitle-row {
+    gap: 14px 18px;
+  }
+
   .two-columns,
   .glossary-editor {
     grid-template-columns: 1fr;

@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections import OrderedDict, deque
 from threading import Event, RLock, Thread
 from time import monotonic, sleep
+from types import SimpleNamespace
 
+from app.languages import UnsupportedLanguagePairError
 from app.translator import TRANSLATION_CACHE_SCHEMA_VERSION, TranslationEngine, _glossary_cache_version
 
 
@@ -20,6 +22,7 @@ def make_engine(max_cache_items: int = 4096) -> TranslationEngine:
     engine.cache_backend = "memory"
     engine.cache_ttl_seconds = 0.0
     engine._cache_lock = RLock()
+    engine._model_lock = RLock()
     engine._inflight = {}
     engine._cache_generation = 0
     engine.max_cache_items = max_cache_items
@@ -298,6 +301,71 @@ def test_translation_cache_configuration_isolated_by_language() -> None:
     assert calls == [["Hallo"], ["Hallo"]]
     assert engine.cache_info()["hits"] == 1
     assert engine.cache_info()["misses"] == 2
+
+
+def test_marian_model_rejects_a_pair_it_cannot_translate() -> None:
+    engine = make_engine()
+    engine.engine = "ctranslate2"
+    engine.model_family = "marian"
+    engine.fixed_source_language = "nl"
+    engine.fixed_target_language = "en"
+
+    try:
+        engine.validate_pair("de", "fr")
+    except UnsupportedLanguagePairError as exc:
+        assert "nl→en only" in str(exc)
+    else:
+        raise AssertionError("unsupported Marian language pair was accepted")
+
+
+def test_same_language_pair_bypasses_translation() -> None:
+    engine = make_engine()
+    engine._translate_transformers_many = lambda _texts: (_ for _ in ()).throw(AssertionError("model called"))
+
+    assert engine.translate_many(["  Hallo   wereld  "], source_language="nl", target_language="nl") == [
+        "Hallo wereld"
+    ]
+
+
+def test_m2m100_ctranslate2_sets_source_and_target_languages() -> None:
+    engine = make_engine()
+    engine.model_family = "m2m100"
+    calls: list[dict] = []
+
+    class Tokenizer:
+        src_lang = ""
+
+        def get_lang_id(self, language: str) -> int:
+            assert language == "fr"
+            return 7
+
+        def encode(self, text: str, **_kwargs) -> list[int]:
+            assert self.src_lang == "de"
+            assert text == "Guten Tag"
+            return [1]
+
+        def convert_ids_to_tokens(self, ids: list[int]) -> list[str]:
+            return ["__fr__"] if ids == [7] else ["source"]
+
+        def convert_tokens_to_ids(self, tokens: list[str]) -> list[int]:
+            assert tokens == ["bonjour"]
+            return [2]
+
+        def decode(self, _ids: list[int], **_kwargs) -> str:
+            return "Bonjour"
+
+    class Translator:
+        def translate_batch(self, batches: list[list[str]], **kwargs):
+            calls.append({"batches": batches, **kwargs})
+            return [SimpleNamespace(hypotheses=[["__fr__", "bonjour"]])]
+
+    engine.tokenizer = Tokenizer()
+    engine.translator = Translator()
+
+    assert engine._translate_ctranslate2_many(
+        ["Guten Tag"], source_language="de", target_language="fr"
+    ) == ["Bonjour"]
+    assert calls[0]["target_prefix"] == [["__fr__"]]
 
 
 def test_translation_cache_can_be_disabled() -> None:

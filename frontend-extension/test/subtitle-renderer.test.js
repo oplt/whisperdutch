@@ -10,6 +10,15 @@ test("mergeByWordOverlap merges repeated boundary words", () => {
   assert.equal(renderer.mergeByWordOverlap("dit is een", "een test"), "dit is een test");
 });
 
+test("splitDutchText separates clickable Dutch words", () => {
+  assert.deepEqual(renderer.splitDutchText("Hallo, wereld!"), [
+    { type: "word", value: "Hallo" },
+    { type: "text", value: ", " },
+    { type: "word", value: "wereld" },
+    { type: "text", value: "!" }
+  ]);
+});
+
 test("exports VTT with timestamps", () => {
   const rows = [{ startMs: 0, endMs: 1200, dutch: "Hallo.", translation: "Hello." }];
   assert.match(renderer.toVtt(rows), /00:00:00\.000 --> 00:00:01\.200/);

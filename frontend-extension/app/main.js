@@ -16,6 +16,7 @@
       });
       this.store = new App.TranscriptStore();
       this.glossary = new App.GlossaryController();
+      this.vocabulary = new App.VocabularyController();
       this.socket = new App.SubtitleSocket({
         logger: this.logger,
         onMessage: payload => this.handleMessage(payload),
@@ -32,6 +33,14 @@
           this.view.setStatus(result === "drop"
             ? `Backend is catching up, ${droppedChunks} audio chunks skipped`
             : "Backend is catching up");
+        },
+        onSilence: () => {
+          this.view.setStatus(this.capture.sourceType === "tab"
+            ? "No tab sound detected. Start playback in the captured video tab."
+            : "No system sound detected. In Firefox, select a monitor audio source instead of a microphone.");
+        },
+        onAudioRestored: () => {
+          if (this.state.value === "capturing") this.view.setStatus("Listening");
         }
       });
       this.startedAt = null;
@@ -40,8 +49,18 @@
     }
 
     async init() {
+      this.view.onDutchWordClick = payload => {
+        const result = this.vocabulary.addFromSubtitle(payload);
+        if (!result) return;
+        this.view.setStatus(result.created
+          ? `Added "${payload.word}" to practising vocabulary`
+          : `"${payload.word}" is already in practising vocabulary`);
+      };
       this.state.subscribe(snapshot => this.view.renderState(snapshot));
       const values = this.settings.load();
+      this.applyLanguages(values);
+      this.view.setCaptureSource(this.capture.sourceType);
+      this.settings.setMonitorSupported(this.capture.sourceType === "tab");
       this.applyMonitor(values);
       this.applyFonts(values);
       this.settings.bind(this.settingsCallbacks());
@@ -54,7 +73,9 @@
         this.state.transition("error", "Reopen the extension from the video tab you want to translate.");
         return;
       }
-      this.state.reset("Ready");
+      this.state.reset(this.capture.sourceType === "tab"
+        ? "Ready"
+        : "Ready — click Start and select your system audio monitor");
       if (this.autoStart) await this.start();
     }
 
@@ -74,6 +95,12 @@
     settingsCallbacks() {
       return {
         onConfig: () => this.sendConfig(),
+        onLanguages: values => {
+          this.stablePartial = "";
+          this.applyLanguages(values);
+          this.sendConfig();
+          this.view.setStatus(`${App.languageName(values.sourceLang)} → ${App.languageName(values.targetLang)}`);
+        },
         onMonitor: values => this.applyMonitor(values),
         onFonts: values => this.applyFonts(values),
         onRestart: () => this.restartBackend(),
@@ -92,10 +119,18 @@
     async start({ restart = false } = {}) {
       if (!["idle", "error"].includes(this.state.value)) return;
       const generation = this.state.value === "error"
-        ? this.state.retry("Starting local service")
-        : this.state.begin("starting-backend", "Starting local service");
+        ? this.state.retry(this.capture.sourceType === "tab" ? "Preparing tab audio" : "Requesting system audio")
+        : this.state.begin("starting-backend", this.capture.sourceType === "tab" ? "Preparing tab audio" : "Requesting system audio");
       this.stablePartial = "";
       try {
+        // Capture first while Brave still associates this page with the user's
+        // extension-button click. Model warmup can otherwise outlive that grant
+        // and leave a valid-looking stream which contains only silence.
+        const started = await this.capture.start(this.tabId);
+        if (!started || !this.state.owns(generation)) {
+          await this.cleanup(false);
+          return;
+        }
         const connection = await this.backend.ensureReady({ restart, device: this.settings.device });
         if (!this.state.owns(generation)) return;
         this.state.transition("connecting", "Connecting to local service");
@@ -105,11 +140,6 @@
           return;
         }
         this.sendConfig();
-        const started = await this.capture.start(this.tabId);
-        if (!started || !this.state.owns(generation)) {
-          await this.cleanup(false);
-          return;
-        }
         this.startedAt = Date.now();
         this.state.transition("capturing", "Listening");
         this.logger.log("info", "capture_started", { mode: this.settings.values().mode });
@@ -182,8 +212,8 @@
       this.socket.send({
         type: "config",
         sample_rate: App.TARGET_SAMPLE_RATE,
-        source_lang: "nl",
-        target_lang: "en",
+        source_lang: values.sourceLang,
+        target_lang: values.targetLang,
         mode: values.mode,
         context_prompt: values.contextPrompt
       });
@@ -191,20 +221,21 @@
 
     handleMessage(payload) {
       if (payload.type === "partial") {
+        const sourceText = payload.source_text || payload.dutch;
         if (payload.is_cleared) {
           this.stablePartial = "";
-        } else if (payload.dutch) {
-          this.stablePartial = root.SubtitleRenderer.stabilizePartial(this.stablePartial, payload.dutch);
-          this.view.showPartial(this.stablePartial);
+        } else if (sourceText) {
+          this.stablePartial = root.SubtitleRenderer.stabilizePartial(this.stablePartial, sourceText);
+          this.view.showPartial(this.stablePartial, payload.source_lang, payload.target_lang);
         }
         return;
       }
-      if (payload.type === "final_pending" && payload.dutch) {
+      if (payload.type === "final_pending" && (payload.source_text || payload.dutch)) {
         this.stablePartial = "";
         this.view.showPending(this.store.addPending(payload, this.elapsedMs()));
         return;
       }
-      if (payload.type === "final" && payload.dutch) {
+      if (payload.type === "final" && (payload.source_text || payload.dutch)) {
         this.stablePartial = "";
         this.view.showFinal(this.store.finalize(payload, this.elapsedMs()));
         this.view.setLatency(payload.latency_ms);
@@ -226,6 +257,11 @@
 
     applyFonts(values) {
       this.settings.persistFonts(this.view.setFontSizes(values.dutchFont, values.translationFont));
+    }
+
+    applyLanguages(values) {
+      this.view.setLanguages(values.sourceLang, values.targetLang);
+      this.vocabulary.setLanguages(values.sourceLang, values.targetLang);
     }
 
     async restartBackend() {

@@ -1,5 +1,4 @@
 (function (root) {
-  const MAX_RENDERED_SUBTITLES = 100;
   const STATE_LABELS = Object.freeze({
     idle: "Ready",
     "starting-backend": "Starting service",
@@ -22,17 +21,45 @@
       this.pauseButton = byId("pauseBtn");
       this.stopButton = byId("stopBtn");
       this.retryButton = byId("retryBtn");
-      this.dutch = byId("currentDutch");
-      this.translation = byId("currentTranslation");
-      this.history = byId("historySubtitles");
-      this.historyCount = byId("historyCount");
+      this.feed = byId("subtitleFeed");
       this.level = byId("inputLevelBar");
       this.announcement = byId("subtitleAnnouncement");
+      this.captureHelp = byId("audioSourceHelp");
       this.currentId = null;
       this.currentItem = null;
       this.historyRows = new Map();
       this.levelFrame = null;
       this.pendingLevel = 0;
+      this.onDutchWordClick = null;
+      this.sourceLang = "nl";
+      this.targetLang = "en";
+      this.liveRow = this.createRow(true);
+      this.feed.appendChild(this.liveRow);
+      this.renderIdleLiveRow();
+    }
+
+    setCaptureSource(sourceType) {
+      if (!this.captureHelp) return;
+      const firefoxInput = sourceType === "audio-input";
+      this.captureHelp.hidden = !firefoxInput;
+      this.captureHelp.textContent = firefoxInput
+        ? "Firefox: choose a PipeWire/PulseAudio monitor source in the audio permission dialog. Your microphone will not capture the video sound."
+        : "";
+    }
+
+    createRow(isLive = false) {
+      const row = this.document.createElement("article");
+      row.className = isLive ? "subtitle-row is-live" : "subtitle-row";
+      const dutch = this.document.createElement("p");
+      dutch.className = "subtitle-dutch";
+      dutch.lang = this.sourceLang;
+      dutch.dir = "auto";
+      const translation = this.document.createElement("p");
+      translation.className = "subtitle-translation";
+      translation.lang = this.targetLang;
+      translation.dir = "auto";
+      row.append(dutch, translation);
+      return row;
     }
 
     renderState(snapshot) {
@@ -59,42 +86,137 @@
       this.latency.hidden = typeof value !== "number";
     }
 
-    showPartial(dutch) {
+    renderRow(row, item) {
+      const sourceLang = item.sourceLang || this.sourceLang;
+      const targetLang = item.targetLang || this.targetLang;
+      row.querySelector(".subtitle-dutch").lang = sourceLang;
+      this.renderDutch(row.querySelector(".subtitle-dutch"), item);
+      const translation = row.querySelector(".subtitle-translation");
+      translation.lang = targetLang;
+      translation.textContent = item.pending
+        ? "Translating…"
+        : item.translation || (item.dutch ? "Translation unavailable" : this.idleTranslation());
+      translation.dataset.pending = String(Boolean(item.pending));
+    }
+
+    sentenceTranslation(item) {
+      if (!item || item.pending) return "";
+      const translation = String(item.translation || "").trim();
+      if (!translation || translation === this.idleTranslation() || translation === "Translation unavailable") return "";
+      if (translation === "Translation follows when the phrase is complete.") return "";
+      return translation;
+    }
+
+    isClickableDutch(item) {
+      return Boolean(item?.dutch && item.dutch !== this.idleSource() && typeof this.onDutchWordClick === "function");
+    }
+
+    renderDutch(element, item) {
+      const text = item?.dutch || "";
+      element.replaceChildren();
+      if (!this.isClickableDutch(item)) {
+        element.textContent = text;
+        return;
+      }
+      const parts = root.SubtitleRenderer.splitDutchText(text);
+      parts.forEach(part => {
+        if (part.type === "text") {
+          element.append(part.value);
+          return;
+        }
+        const button = this.document.createElement("button");
+        button.type = "button";
+        button.className = "subtitle-word";
+        button.textContent = part.value;
+        button.title = `Add "${part.value}" to practising vocabulary`;
+        button.setAttribute("aria-label", `Add ${part.value} to practising vocabulary`);
+        button.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.onDutchWordClick({
+            word: part.value,
+            dutchSentence: text,
+            englishSentence: this.sentenceTranslation(item),
+            sourceLanguage: item.sourceLang || this.sourceLang,
+            targetLanguage: item.targetLang || this.targetLang
+          });
+        });
+        element.append(button);
+      });
+    }
+
+    renderIdleLiveRow() {
+      this.renderRow(this.liveRow, {
+        dutch: this.idleSource(),
+        translation: this.idleTranslation(),
+        sourceLang: this.sourceLang,
+        targetLang: this.targetLang,
+        pending: false
+      });
+    }
+
+    showPartial(dutch, sourceLang = this.sourceLang, targetLang = this.targetLang) {
       if (this.currentItem?.pending) return;
-      this.currentId = null;
-      this.currentItem = null;
-      this.dutch.textContent = dutch || "Listening for Dutch speech…";
-      this.translation.textContent = dutch ? "Translation follows when the phrase is complete." : "English translation will appear here.";
-      this.translation.dataset.pending = dutch ? "true" : "false";
+      if (this.currentItem?.dutch || this.currentItem?.translation) {
+        this.moveCurrentToHistory();
+      } else {
+        this.currentId = null;
+        this.currentItem = null;
+      }
+      if (!dutch) {
+        this.renderIdleLiveRow();
+        return;
+      }
+      this.renderRow(this.liveRow, {
+        dutch,
+        translation: "Translation follows when the phrase is complete.",
+        sourceLang,
+        targetLang,
+        pending: true
+      });
+    }
+
+    idleSource() {
+      return `Listening for ${this.languageName(this.sourceLang)} speech…`;
+    }
+
+    idleTranslation() {
+      return `${this.languageName(this.targetLang)} translation will appear here.`;
+    }
+
+    languageName(code) {
+      return root.SubtitleApp?.languageName?.(code) || String(code || "").toUpperCase();
+    }
+
+    setLanguages(sourceLang, targetLang) {
+      this.sourceLang = sourceLang || "nl";
+      this.targetLang = targetLang || "en";
+      if (!this.currentItem) this.renderIdleLiveRow();
     }
 
     showPending(item) {
       if (this.currentItem && this.currentId !== item.id) this.moveCurrentToHistory();
       this.currentId = item.id;
       this.currentItem = item;
-      this.renderCurrent(item);
+      this.renderRow(this.liveRow, item);
     }
 
     showFinal(item) {
       if (this.currentId === item.id) {
         this.currentItem = item;
-        this.renderCurrent(item);
+        this.renderRow(this.liveRow, item);
       } else if (this.historyRows.has(item.id)) {
-        this.renderRow(this.historyRows.get(item.id), item);
+        const row = this.historyRows.get(item.id);
+        this.renderRow(row, item);
+        this.promoteHistoryRow(row);
       } else if (!this.currentItem) {
         this.currentId = item.id;
         this.currentItem = item;
-        this.renderCurrent(item);
+        this.renderRow(this.liveRow, item);
       } else {
         this.prependHistory(item);
       }
       if (this.announcement) this.announcement.textContent = item.translation || item.dutch;
-    }
-
-    renderCurrent(item) {
-      this.dutch.textContent = item.dutch || "Listening for Dutch speech…";
-      this.translation.textContent = item.pending ? "Translating…" : item.translation || "Translation unavailable";
-      this.translation.dataset.pending = String(Boolean(item.pending));
     }
 
     moveCurrentToHistory() {
@@ -107,63 +229,47 @@
       const existing = this.historyRows.get(item.id);
       if (existing) {
         this.renderRow(existing, item);
+        this.promoteHistoryRow(existing);
         return;
       }
-      const row = this.document.createElement("article");
-      row.className = "history-row";
+      const row = this.createRow(false);
       row.dataset.subtitleId = item.id;
-      const dutch = this.document.createElement("p");
-      dutch.className = "history-dutch";
-      const translation = this.document.createElement("p");
-      translation.className = "history-translation";
-      row.append(dutch, translation);
       this.renderRow(row, item);
-      this.history.prepend(row);
+      this.feed.insertBefore(row, this.liveRow.nextSibling);
       this.historyRows.set(item.id, row);
-      while (this.history.childElementCount > MAX_RENDERED_SUBTITLES) {
-        const last = this.history.lastElementChild;
-        if (!last) break;
-        this.historyRows.delete(last.dataset.subtitleId);
-        last.remove();
-      }
-      this.updateHistoryCount();
     }
 
-    renderRow(row, item) {
-      row.querySelector(".history-dutch").textContent = item.dutch || "";
-      const translation = row.querySelector(".history-translation");
-      translation.textContent = item.pending ? "Translating…" : item.translation || "Translation unavailable";
-      translation.dataset.pending = String(Boolean(item.pending));
+    promoteHistoryRow(row) {
+      if (row === this.liveRow || row === this.liveRow.nextSibling) return;
+      this.feed.insertBefore(row, this.liveRow.nextSibling);
     }
 
     restore(items) {
-      this.clear();
-      const visible = items.filter(item => item.dutch || item.translation).slice(-(MAX_RENDERED_SUBTITLES + 1));
-      const current = visible.pop();
-      visible.forEach(item => this.prependHistory(item));
-      if (current) {
-        this.currentId = current.id;
-        this.currentItem = current;
-        this.renderCurrent(current);
+      this.clear({ keepLiveRow: true });
+      const visible = items.filter(item => item.dutch || item.translation);
+      if (!visible.length) {
+        this.renderIdleLiveRow();
+        return;
       }
-      this.updateHistoryCount();
+      const current = visible[visible.length - 1];
+      visible.slice(0, -1).reverse().forEach(item => this.prependHistory(item));
+      this.currentId = current.id;
+      this.currentItem = current;
+      this.renderRow(this.liveRow, current);
     }
 
-    clear() {
+    clear(options = {}) {
       this.currentId = null;
       this.currentItem = null;
       this.historyRows.clear();
-      this.history.replaceChildren();
-      this.dutch.textContent = "Listening for Dutch speech…";
-      this.translation.textContent = "English translation will appear here.";
-      this.translation.dataset.pending = "false";
+      [...this.feed.children].forEach(child => {
+        if (child !== this.liveRow) child.remove();
+      });
+      if (options.keepLiveRow !== true) {
+        if (this.liveRow.parentNode !== this.feed) this.feed.prepend(this.liveRow);
+      }
+      this.renderIdleLiveRow();
       this.setLatency(null);
-      this.updateHistoryCount();
-    }
-
-    updateHistoryCount() {
-      const count = this.history.childElementCount;
-      this.historyCount.textContent = count ? `${count} recent` : "Empty";
     }
 
     setLevel(level) {
@@ -185,7 +291,7 @@
     }
   }
 
-  const api = { SubtitleView, MAX_RENDERED_SUBTITLES, STATE_LABELS };
+  const api = { SubtitleView, STATE_LABELS };
   root.SubtitleApp = Object.assign(root.SubtitleApp || {}, api);
   if (typeof module !== "undefined") module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);

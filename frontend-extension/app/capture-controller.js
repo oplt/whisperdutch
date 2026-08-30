@@ -11,11 +11,17 @@
       this.logger = options.logger;
       this.onLevel = options.onLevel || (() => {});
       this.onBackpressure = options.onBackpressure || (() => {});
+      this.onSilence = options.onSilence || (() => {});
+      this.onAudioRestored = options.onAudioRestored || (() => {});
+      this.setTimeout = options.setTimeout || root.setTimeout.bind(root);
+      this.clearTimeout = options.clearTimeout || root.clearTimeout.bind(root);
+      this.silenceTimeoutMs = Math.max(1000, Number(options.silenceTimeoutMs) || 8000);
       this.stream = null;
       this.context = null;
       this.source = null;
       this.worklet = null;
       this.monitor = null;
+      this.processorSink = null;
       this.acceptingAudio = false;
       this.paused = false;
       this.generation = 0;
@@ -23,6 +29,10 @@
       this.lastBackpressureAt = 0;
       this.volume = 1;
       this.muted = false;
+      this.silenceTimer = null;
+      this.heardAudio = false;
+      this.silenceWarned = false;
+      this.sourceType = this.supportsTabCapture() ? "tab" : "audio-input";
     }
 
     get active() {
@@ -49,20 +59,42 @@
       this.source = context.createMediaStreamSource(stream);
       this.worklet = new this.AudioWorkletNodeImpl(context, "pcm-worklet");
       this.monitor = context.createGain();
+      this.processorSink = context.createGain();
+      this.processorSink.gain.value = 0;
       this.applyMonitor();
       this.worklet.port.postMessage({ type: "config", targetSampleRate: TARGET_SAMPLE_RATE });
       this.source.connect(this.worklet);
-      this.source.connect(this.monitor);
-      this.monitor.connect(context.destination);
+      // Keep the processor in Brave's destination graph. A dangling AudioWorklet
+      // can be treated as inaudible and stop receiving render callbacks.
+      this.worklet.connect(this.processorSink);
+      this.processorSink.connect(context.destination);
+      // Chromium tabCapture replaces the tab's normal playback, so route it
+      // back to the speakers. Firefox captures an OS monitor input whose audio
+      // is already playing and must not be duplicated.
+      if (this.sourceType === "tab") {
+        this.source.connect(this.monitor);
+        this.monitor.connect(context.destination);
+      }
       this.worklet.port.onmessage = event => this.handleAudio(event);
+      if (context.state === "suspended") await context.resume();
+      if (context.state !== "running") {
+        throw new Error("The browser blocked audio processing. Click Retry, then allow audio capture.");
+      }
       this.acceptingAudio = true;
       this.paused = false;
+      this.watchForSilence();
       return true;
     }
 
-    captureTabAudio(tabId) {
+    async captureTabAudio(tabId) {
+      if (!this.supportsTabCapture()) return this.captureAudioInput();
+
+      const consumerTabId = await this.currentTabId();
+      const options = { targetTabId: tabId };
+      if (consumerTabId) options.consumerTabId = consumerTabId;
+
       return new Promise((resolve, reject) => {
-        this.chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, async streamId => {
+        this.chrome.tabCapture.getMediaStreamId(options, async streamId => {
           const lastError = this.chrome.runtime.lastError;
           if (lastError) {
             reject(new Error(lastError.message));
@@ -89,9 +121,67 @@
       });
     }
 
+    supportsTabCapture() {
+      return typeof this.chrome?.tabCapture?.getMediaStreamId === "function";
+    }
+
+    async captureAudioInput() {
+      const getUserMedia = this.navigator?.mediaDevices?.getUserMedia;
+      if (typeof getUserMedia !== "function") {
+        throw new Error("This Firefox installation cannot access an audio input.");
+      }
+
+      let stream;
+      try {
+        stream = await getUserMedia.call(this.navigator.mediaDevices, {
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          },
+          video: false
+        });
+      } catch (error) {
+        if (["NotAllowedError", "SecurityError"].includes(error?.name)) {
+          throw new Error("Firefox needs audio permission. Click Retry and select your system audio monitor in the permission dialog.");
+        }
+        if (["NotFoundError", "OverconstrainedError"].includes(error?.name)) {
+          throw new Error("Firefox cannot find a usable audio source. Expose a PipeWire/PulseAudio monitor, then click Retry.");
+        }
+        throw error;
+      }
+
+      if (!stream?.getAudioTracks?.().length) {
+        stream?.getTracks?.().forEach(track => track.stop());
+        throw new Error("Firefox returned no audio track. Click Retry and select a system audio monitor, not a microphone.");
+      }
+      return stream;
+    }
+
+    currentTabId() {
+      if (!this.chrome?.tabs?.getCurrent) return Promise.resolve(null);
+      return new Promise(resolve => {
+        this.chrome.tabs.getCurrent(tab => {
+          // Treat lookup failure as a compatibility fallback. Capturing from the
+          // calling extension page still works when consumerTabId is omitted.
+          if (this.chrome.runtime.lastError) {
+            resolve(null);
+            return;
+          }
+          resolve(Number.isInteger(tab?.id) && tab.id > 0 ? tab.id : null);
+        });
+      });
+    }
+
     handleAudio(event) {
       const pcm = event.data?.pcm || event.data;
-      this.onLevel(Number(event.data?.level) || 0);
+      const level = Number(event.data?.level) || 0;
+      this.onLevel(level);
+      if (level > 0.005 && !this.heardAudio) {
+        this.heardAudio = true;
+        this.cancelSilenceWarning();
+        if (this.silenceWarned) this.onAudioRestored();
+      }
       if (!this.acceptingAudio || this.paused) return;
       const result = this.socket.sendAudio(pcm);
       if (result !== "drop" && result !== "warn") return;
@@ -127,6 +217,26 @@
       this.acceptingAudio = false;
       this.paused = false;
       this.generation += 1;
+      this.cancelSilenceWarning();
+    }
+
+    watchForSilence() {
+      this.cancelSilenceWarning();
+      this.heardAudio = false;
+      this.silenceWarned = false;
+      this.silenceTimer = this.setTimeout(() => {
+        this.silenceTimer = null;
+        if (this.acceptingAudio && !this.paused && !this.heardAudio) {
+          this.silenceWarned = true;
+          this.onSilence();
+        }
+      }, this.silenceTimeoutMs);
+    }
+
+    cancelSilenceWarning() {
+      if (this.silenceTimer === null) return;
+      this.clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
     }
 
     async close() {
@@ -134,11 +244,13 @@
       const worklet = this.worklet;
       const source = this.source;
       const monitor = this.monitor;
+      const processorSink = this.processorSink;
       const context = this.context;
       const stream = this.stream;
       this.worklet = null;
       this.source = null;
       this.monitor = null;
+      this.processorSink = null;
       this.context = null;
       this.stream = null;
       this.onLevel(0);
@@ -146,6 +258,7 @@
       this.safe(() => worklet?.disconnect());
       this.safe(() => source?.disconnect());
       this.safe(() => monitor?.disconnect());
+      this.safe(() => processorSink?.disconnect());
       if (context && context.state !== "closed") {
         await context.close().catch(error => {
           this.logger?.log("warn", "audio_context_close_failed", {
