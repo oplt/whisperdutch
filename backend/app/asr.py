@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any, Literal
 
 import numpy as np
@@ -316,6 +316,24 @@ def _bounded_env_float(name: str, default: float, *, minimum: float, maximum: fl
     return value
 
 
-@lru_cache(maxsize=1)
+_asr_engine: TranscriptionEngine | None = None
+_asr_engine_lock = threading.RLock()
+
+
 def get_asr_engine() -> TranscriptionEngine:
-    return TranscriptionEngine()
+    global _asr_engine
+    if _asr_engine is not None:
+        return _asr_engine
+    with _asr_engine_lock:
+        if _asr_engine is None:
+            _asr_engine = TranscriptionEngine()
+        return _asr_engine
+
+
+def _clear_asr_engine_cache() -> None:
+    global _asr_engine
+    with _asr_engine_lock:
+        _asr_engine = None
+
+
+get_asr_engine.cache_clear = _clear_asr_engine_cache  # type: ignore[attr-defined]

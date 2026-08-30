@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { StreamingPCM16Resampler, WORKLET_BATCH_DURATION_MS } = require("../audio/worklet.js");
+const { StreamingPCM16Resampler, DEFAULT_WORKLET_BATCH_DURATION_MS } = require("../audio/worklet.js");
 
 function resampleInChunks(sourceRate, durationSeconds, chunkSize) {
   const resampler = new StreamingPCM16Resampler(sourceRate, 16000);
@@ -34,7 +34,7 @@ for (const sourceRate of [44100, 48000, 96000]) {
 
   test(`${sourceRate} Hz long-duration output has no timing drift`, () => {
     const durationSeconds = 60;
-    const result = resampleInChunks(sourceRate, durationSeconds, Math.round(sourceRate * WORKLET_BATCH_DURATION_MS / 1000));
+    const result = resampleInChunks(sourceRate, durationSeconds, Math.round(sourceRate * DEFAULT_WORKLET_BATCH_DURATION_MS / 1000));
     assert.equal(result.outputSamples, durationSeconds * 16000);
   });
 }

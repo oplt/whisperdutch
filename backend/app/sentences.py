@@ -120,6 +120,10 @@ class SentenceAssembler:
             self._remember(sentence)
         return completed
 
+    def reset(self) -> None:
+        self._buffer = ""
+        self._recent.clear()
+
     def partial_text(self) -> str:
         return normalize_fragment(self._buffer)
 

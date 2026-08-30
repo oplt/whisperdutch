@@ -69,9 +69,24 @@ def test_nllb_backend_uses_flores_codes() -> None:
 def test_unsupported_backend_family() -> None:
     with pytest.raises(UnsupportedLanguagePairError):
         translation_backends.create_ctranslate2_backend(
-            model_family="marian",
+            model_family="unknown",
             tokenizer=FakeTokenizer(),
             translator=MagicMock(),
             beam_size=1,
             max_decoding_length=32,
         )
+
+
+def test_marian_backend_translates_without_target_prefix() -> None:
+    tokenizer = FakeTokenizer()
+    translator = MagicMock()
+    translator.translate_batch.return_value = [SimpleNamespace(hypotheses=[["hello"]])]
+    backend = translation_backends.MarianCTranslate2Backend(
+        tokenizer=tokenizer,
+        translator=translator,
+        beam_size=1,
+        max_decoding_length=32,
+    )
+    result = backend.translate_many(["Hallo"], source_language="nl", target_language="en")
+    assert result == ["translated"]
+    assert "target_prefix" not in translator.translate_batch.call_args.kwargs

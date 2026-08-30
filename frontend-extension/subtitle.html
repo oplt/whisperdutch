@@ -77,6 +77,7 @@
               <select id="targetLanguage"></select>
             </label>
           </div>
+          <p id="languagePairHelp" class="help-text" hidden></p>
           <label class="field" for="monitorVolume">
             <span>Tab audio volume</span>
             <input id="monitorVolume" type="range" min="0" max="1" step="0.05" value="1" />
@@ -192,6 +193,7 @@
   <script src="app/state.js"></script>
   <script src="app/logger.js"></script>
   <script src="app/backend-service.js"></script>
+  <script src="app/audio-backpressure.js"></script>
   <script src="app/websocket-client.js"></script>
   <script src="app/capture-controller.js"></script>
   <script src="app/transcript-store.js"></script>

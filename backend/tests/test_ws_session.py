@@ -161,10 +161,6 @@ def test_stale_partial_finishing_after_final_is_not_sent(monkeypatch) -> None:
             generation=session._final_generation,
         )
 
-        async def run_inline(function, *args):
-            return function(*args)
-
-        monkeypatch.setattr(asyncio, "to_thread", run_inline)
         monkeypatch.setattr("app.ws_session.transcribe_partial", lambda *_args: ("oude partial", {"latency_ms": 1, "audio_seconds": 0.4}))
         await session._enqueue_final(np.ones(4, dtype=np.float32), force=True)
         await session._process_partial(stale_partial)
@@ -301,13 +297,11 @@ def test_final_subtitle_is_sent_before_history_persistence(monkeypatch) -> None:
         async def persist(_payload: dict) -> None:
             events.append("persist")
 
-        session._persist_subtitle = persist
+        def persist_sync(_payload: dict) -> None:
+            events.append("persist")
+
+        session._persist_subtitle = persist_sync
         monkeypatch.setattr("app.ws_session.translate_many_sentences", lambda _sentences, _config: ["Hello"])
-
-        async def run_inline(function, *args):
-            return function(*args)
-
-        monkeypatch.setattr(asyncio, "to_thread", run_inline)
 
         await session._translate_and_send(
             [{"id": "final-1", "sentence": "Hallo", "quality": {"level": "good"}}],
@@ -334,13 +328,8 @@ def test_final_payload_includes_optional_timestamps(monkeypatch) -> None:
             payloads.append(payload)
 
         session._send_json = send
-        session._persist_subtitle = lambda _payload: asyncio.sleep(0)
+        session._persist_subtitle = lambda _payload: None
         monkeypatch.setattr("app.ws_session.translate_many_sentences", lambda _sentences, _config: ["Hello"])
-
-        async def run_inline(function, *args):
-            return function(*args)
-
-        monkeypatch.setattr(asyncio, "to_thread", run_inline)
 
         await session._translate_and_send(
             [
@@ -369,3 +358,49 @@ def test_final_payload_includes_optional_timestamps(monkeypatch) -> None:
         assert final["words"][0]["text"] == "Hallo"
 
     asyncio.run(run())
+
+
+def test_audio_gap_resets_segmentation_state() -> None:
+    async def run() -> None:
+        session = make_session()
+        from app.sentences import SentenceAssembler
+
+        session.sentence_assembler = SentenceAssembler(source_language="nl", enabled=False)
+        session.segmenter.add(np.ones(1600, dtype=np.float32) * 0.2)
+        assert session.segmenter.in_speech is True
+        session.sentence_assembler._buffer = "Unfinished fragment"
+
+        acks: list[dict] = []
+
+        async def send(payload: dict) -> None:
+            acks.append(payload)
+
+        session._send_json = send
+        await session._handle_audio_gap(
+            {
+                "type": "audio_gap",
+                "reason": "backpressure",
+                "dropped_chunks": 3,
+                "buffered_audio_ms": 300,
+            }
+        )
+
+        assert session.segmenter.in_speech is False
+        assert session.sentence_assembler._buffer == ""
+        assert session._final_generation == 1
+        assert session.stats.audio_gap_resets == 1
+        assert acks == [{"type": "audio_gap_ack", "generation": 1}]
+
+    asyncio.run(run())
+
+
+def test_audio_gap_does_not_merge_sentences_across_gap() -> None:
+    from app.sentences import SentenceAssembler
+
+    assembler = SentenceAssembler(source_language="nl", enabled=True, min_final_words=1)
+    assembler.add_fragment("Eerste")
+    assembler._buffer = "Onafgemaakte"
+    assembler.reset()
+    completed, remainder = assembler.add_fragment("Tweede.")
+    assert completed == ["Tweede."]
+    assert "Onafgemaakte" not in remainder

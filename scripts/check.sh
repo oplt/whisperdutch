@@ -28,3 +28,5 @@ fi
 if "${PYTHON}" -m mypy --version >/dev/null 2>&1; then
   "${PYTHON}" -m mypy "${ROOT}/backend/app" "${ROOT}/native-host/start_backend_host.py"
 fi
+
+echo "All checks passed!"

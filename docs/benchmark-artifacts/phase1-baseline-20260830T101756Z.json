@@ -1,0 +1,502 @@
+{
+  "benchmark": "phase1-next-baseline",
+  "generated_at_utc": "2026-08-30T10:17:22.517028+00:00",
+  "git": {
+    "commit": "60dc89d94237a01bbbdd1b6455f0f3baf2d381bd",
+    "commit_short": "60dc89d",
+    "branch": "main",
+    "subject": "dev"
+  },
+  "host": {
+    "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "logical_cpus": 16
+  },
+  "versions": {
+    "python": "3.12.3",
+    "faster-whisper": "1.2.1",
+    "ctranslate2": "4.7.1",
+    "transformers": "4.57.6",
+    "fastapi": "0.136.1",
+    "numpy": "2.4.5"
+  },
+  "cuda": {
+    "cuda_available": false,
+    "cuda_device_count": 0
+  },
+  "configuration": {
+    "ASR_MODEL": "small",
+    "ASR_DEVICE": "cpu",
+    "ASR_COMPUTE_TYPE": "int8",
+    "TRANSLATION_MODEL_FAMILY": "nllb",
+    "TRANSLATION_MODEL": "models/nllb-200-distilled-600m-ct2",
+    "TRANSLATION_TOKENIZER": "facebook/nllb-200-distilled-600M",
+    "TRANSLATION_DEVICE": "cpu",
+    "TRANSLATION_COMPUTE_TYPE": "int8",
+    "TRANSLATION_ENGINE": "ctranslate2"
+  },
+  "startup": {
+    "benchmark": "phase1-startup",
+    "direct": {
+      "port": 8001,
+      "process_launch_ms": 0.48,
+      "health_live_ms": 4057.277,
+      "health_ready_ms": 8531.867,
+      "live_payload": {
+        "ok": true,
+        "live": true,
+        "service": "local-live-subtitle-translator",
+        "version": "0.8.0-low-latency",
+        "websocket": "/ws/subtitles"
+      },
+      "ready_payload": {
+        "ok": true,
+        "ready": true,
+        "model_ready": true,
+        "phase": "ready",
+        "last_error": null,
+        "warmed_up_at": 1788085051.0848458
+      },
+      "peak_rss_kib": 1834724,
+      "startup_cpu_seconds": 8.87,
+      "startup_cpu_percent_one_core": 103.953,
+      "exit_code_before_cleanup": null
+    },
+    "native_host": {
+      "port": 8003,
+      "latency_ms": 0.897,
+      "response": {
+        "ok": true,
+        "status": "already_running",
+        "message": "Backend is already running.",
+        "host": "127.0.0.1",
+        "port": 8000,
+        "base_url": "http://127.0.0.1:8000",
+        "ws_url": "ws://127.0.0.1:8000/ws/subtitles",
+        "health_url": "http://127.0.0.1:8000/health/live",
+        "ready_url": "http://127.0.0.1:8000/health/ready",
+        "device_url": "http://127.0.0.1:8000/debug/device"
+      }
+    }
+  },
+  "pipeline_fast": {
+    "wav": "/home/polat/Desktop/Projects/dutch-subtitle-translator/docs/benchmark-artifacts/phase1-benchmark-16rnzb_y/phase1-synthetic.wav",
+    "mode": "fast",
+    "sample_rate": 16000,
+    "segments": 4,
+    "asr_model": "small",
+    "translation_model_family": "nllb",
+    "translation_model": "models/nllb-200-distilled-600m-ct2",
+    "initialization_seconds": 4.039,
+    "warmup_seconds": 0.199,
+    "versions": {
+      "python": "3.12.3",
+      "faster_whisper": "1.2.1",
+      "ctranslate2": "4.7.1"
+    },
+    "configuration": {
+      "source_language": "nl",
+      "target_language": "en",
+      "asr_device": "cpu",
+      "asr_compute_type": "int8",
+      "translation_device": "cpu",
+      "translation_compute_type": "int8",
+      "warmup_excluded": true
+    },
+    "resources": {
+      "wall_seconds": 3.84,
+      "cpu_seconds": 16.671,
+      "cpu_percent_one_core": 434.151,
+      "cpu_percent_system_capacity": 27.134,
+      "logical_cpus": 16,
+      "max_rss_kib": 2156020
+    },
+    "translation_cache": {
+      "workload": {
+        "disabled": false,
+        "schema_version": 2,
+        "hits": 9,
+        "misses": 2,
+        "evictions": 0,
+        "sets": 2,
+        "single_flight_waits": 0,
+        "inflight": 0,
+        "backend": "memory",
+        "ttl_seconds": 0.0,
+        "max_items": 4096,
+        "size": 2,
+        "hit_ratio": 0.8181818181818182,
+        "glossary_version": "disabled",
+        "latency_ms": {
+          "cache_hit": {
+            "count": 9,
+            "p50": 0.001,
+            "p95": 0.005,
+            "max": 0.007
+          },
+          "cache_miss_lookup": {
+            "count": 2,
+            "p50": 0.0,
+            "p95": 0.0,
+            "max": 0.0
+          },
+          "cache_miss_translation": {
+            "count": 2,
+            "p50": 235.199,
+            "p95": 286.862,
+            "max": 292.602
+          }
+        },
+        "acceptance": {
+          "cache_hit_under_5ms": true,
+          "cache_hit_samples": 9
+        },
+        "durable": {
+          "backend": "memory",
+          "enabled": false,
+          "path": null,
+          "ttl_seconds": 0.0,
+          "hits": 0,
+          "misses": 0,
+          "read_failures": 0,
+          "write_failures": 0,
+          "size": 0
+        }
+      },
+      "l1_hit_latency_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      }
+    },
+    "summary": {
+      "partial_asr_latency_ms": {
+        "count": 10,
+        "p50": 963.0,
+        "p95": 1121.25,
+        "max": 1164.0
+      },
+      "asr_latency_ms": {
+        "count": 4,
+        "p50": 941.0,
+        "p95": 1053.45,
+        "max": 1068.0
+      },
+      "mt_latency_ms": {
+        "count": 10,
+        "p50": 0.0,
+        "p95": 160.6,
+        "max": 292.0
+      },
+      "translation_probe_latency_ms": {
+        "count": 10,
+        "p50": 0.0,
+        "p95": 160.6,
+        "max": 292.0
+      },
+      "total_latency_ms": {
+        "count": 4,
+        "p50": 941.0,
+        "p95": 1053.45,
+        "max": 1068.0
+      },
+      "realtime_factor": {
+        "count": 4,
+        "p50": 0.314,
+        "p95": 0.351,
+        "max": 0.356
+      }
+    },
+    "rows": [
+      {
+        "index": 1,
+        "audio_seconds": 3.0,
+        "asr_latency_ms": 888,
+        "mt_latency_ms": 0,
+        "total_latency_ms": 888,
+        "realtime_factor": 0.296,
+        "sentence_count": 0,
+        "cue_count": 0,
+        "word_count": 0,
+        "translation_count": 0
+      },
+      {
+        "index": 2,
+        "audio_seconds": 3.0,
+        "asr_latency_ms": 971,
+        "mt_latency_ms": 0,
+        "total_latency_ms": 971,
+        "realtime_factor": 0.324,
+        "sentence_count": 0,
+        "cue_count": 0,
+        "word_count": 0,
+        "translation_count": 0
+      },
+      {
+        "index": 3,
+        "audio_seconds": 3.0,
+        "asr_latency_ms": 911,
+        "mt_latency_ms": 0,
+        "total_latency_ms": 911,
+        "realtime_factor": 0.304,
+        "sentence_count": 0,
+        "cue_count": 0,
+        "word_count": 0,
+        "translation_count": 0
+      },
+      {
+        "index": 4,
+        "audio_seconds": 3.0,
+        "asr_latency_ms": 1068,
+        "mt_latency_ms": 0,
+        "total_latency_ms": 1068,
+        "realtime_factor": 0.356,
+        "sentence_count": 0,
+        "cue_count": 0,
+        "word_count": 0,
+        "translation_count": 0
+      }
+    ]
+  },
+  "concurrency_fake": {
+    "benchmark": "phase1-concurrency",
+    "engine": "fake",
+    "model_info": null,
+    "configuration": {
+      "sessions": [
+        1,
+        2,
+        4
+      ],
+      "jobs": 8,
+      "partials_per_final": 1,
+      "source_language": "nl",
+      "target_language": "en",
+      "mode": "fast",
+      "fake_asr_ms": 30.0,
+      "fake_translation_ms": 5.0,
+      "translation_cache_disabled": true
+    },
+    "results": [
+      {
+        "sessions": 1,
+        "jobs_per_session": 8,
+        "wall_seconds": 0.419,
+        "throughput_final_jobs_per_second": 19.102,
+        "cpu_seconds": 0.004,
+        "cpu_percent_one_core": 0.963,
+        "cpu_percent_system_capacity": 0.06,
+        "max_rss_kib": 563536,
+        "partial_inferences_per_minute": 1146.121,
+        "partial_asr_latency_ms": {
+          "count": 8,
+          "p50": 16.656,
+          "p95": 16.788,
+          "max": 16.789
+        },
+        "final_asr_latency_ms": {
+          "count": 8,
+          "p50": 30.158,
+          "p95": 30.268,
+          "max": 30.281
+        },
+        "translation_latency_ms": {
+          "count": 8,
+          "p50": 5.117,
+          "p95": 5.254,
+          "max": 5.308
+        },
+        "asr_queue_wait_ms": {
+          "count": 16,
+          "p50": 0.057,
+          "p95": 0.17,
+          "max": 0.179
+        },
+        "translation_queue_wait_ms": {
+          "count": 8,
+          "p50": 0.052,
+          "p95": 0.083,
+          "max": 0.085
+        },
+        "final_end_to_end_latency_ms": {
+          "count": 8,
+          "p50": 35.489,
+          "p95": 35.698,
+          "max": 35.754
+        },
+        "realtime_factor": {
+          "count": 8,
+          "p50": 0.012,
+          "p95": 0.012,
+          "max": 0.012
+        }
+      },
+      {
+        "sessions": 2,
+        "jobs_per_session": 8,
+        "wall_seconds": 0.419,
+        "throughput_final_jobs_per_second": 38.163,
+        "cpu_seconds": 0.007,
+        "cpu_percent_one_core": 1.667,
+        "cpu_percent_system_capacity": 0.104,
+        "max_rss_kib": 563536,
+        "partial_inferences_per_minute": 2289.787,
+        "partial_asr_latency_ms": {
+          "count": 16,
+          "p50": 16.679,
+          "p95": 16.739,
+          "max": 16.74
+        },
+        "final_asr_latency_ms": {
+          "count": 16,
+          "p50": 30.129,
+          "p95": 30.308,
+          "max": 30.314
+        },
+        "translation_latency_ms": {
+          "count": 16,
+          "p50": 5.153,
+          "p95": 5.251,
+          "max": 5.26
+        },
+        "asr_queue_wait_ms": {
+          "count": 32,
+          "p50": 0.055,
+          "p95": 0.162,
+          "max": 0.17
+        },
+        "translation_queue_wait_ms": {
+          "count": 16,
+          "p50": 0.093,
+          "p95": 0.19,
+          "max": 0.195
+        },
+        "final_end_to_end_latency_ms": {
+          "count": 16,
+          "p50": 35.561,
+          "p95": 35.771,
+          "max": 35.778
+        },
+        "realtime_factor": {
+          "count": 16,
+          "p50": 0.012,
+          "p95": 0.012,
+          "max": 0.012
+        }
+      },
+      {
+        "sessions": 4,
+        "jobs_per_session": 8,
+        "wall_seconds": 0.419,
+        "throughput_final_jobs_per_second": 76.309,
+        "cpu_seconds": 0.011,
+        "cpu_percent_one_core": 2.712,
+        "cpu_percent_system_capacity": 0.169,
+        "max_rss_kib": 563664,
+        "partial_inferences_per_minute": 4578.525,
+        "partial_asr_latency_ms": {
+          "count": 32,
+          "p50": 16.665,
+          "p95": 16.764,
+          "max": 16.86
+        },
+        "final_asr_latency_ms": {
+          "count": 32,
+          "p50": 30.177,
+          "p95": 30.468,
+          "max": 30.532
+        },
+        "translation_latency_ms": {
+          "count": 32,
+          "p50": 5.13,
+          "p95": 5.297,
+          "max": 5.375
+        },
+        "asr_queue_wait_ms": {
+          "count": 64,
+          "p50": 0.057,
+          "p95": 0.168,
+          "max": 0.181
+        },
+        "translation_queue_wait_ms": {
+          "count": 32,
+          "p50": 0.05,
+          "p95": 0.123,
+          "max": 0.129
+        },
+        "final_end_to_end_latency_ms": {
+          "count": 32,
+          "p50": 35.524,
+          "p95": 35.989,
+          "max": 36.171
+        },
+        "realtime_factor": {
+          "count": 32,
+          "p50": 0.012,
+          "p95": 0.012,
+          "max": 0.012
+        }
+      }
+    ],
+    "not_measured": {
+      "capture_to_backend_audio_delay": "Binary PCM frames carry no capture timestamp.",
+      "dropped_audio_chunks": "Requires a browser capture session; not part of this backend harness.",
+      "websocket_buffered_amount_high_water": "The frontend does not currently retain this high-water mark.",
+      "history_write_backlog": "History persistence is excluded from this inference-only harness."
+    }
+  },
+  "concurrency_real": null,
+  "derived": {
+    "health_live_ms": 4057.277,
+    "health_ready_ms": 8531.867,
+    "native_host_start_ms": 0.897,
+    "partial_asr_latency_ms": {
+      "count": 10,
+      "p50": 963.0,
+      "p95": 1121.25,
+      "max": 1164.0
+    },
+    "final_asr_latency_ms": {
+      "count": 4,
+      "p50": 941.0,
+      "p95": 1053.45,
+      "max": 1068.0
+    },
+    "translation_latency_ms": {
+      "count": 10,
+      "p50": 0.0,
+      "p95": 160.6,
+      "max": 292.0
+    },
+    "final_end_to_end_latency_ms": {
+      "count": 4,
+      "p50": 941.0,
+      "p95": 1053.45,
+      "max": 1068.0
+    },
+    "realtime_factor": {
+      "count": 4,
+      "p50": 0.314,
+      "p95": 0.351,
+      "max": 0.356
+    },
+    "translation_cache_hit_ratio": 0.8182,
+    "translation_cache_l1_hit_latency_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "max": null
+    },
+    "max_rss_kib_pipeline": 2156020,
+    "cpu_percent_pipeline": 27.134
+  },
+  "not_measured_in_this_harness": {
+    "capture_to_backend_audio_delay_ms": "PCM WebSocket frames carry no capture timestamp.",
+    "dropped_audio_chunks": "Requires live browser capture telemetry.",
+    "websocket_buffered_amount_high_water_mark": "Frontend does not persist this metric yet.",
+    "history_write_backlog": "Excluded from offline harness; SESSION_HISTORY_ENABLED may differ in production.",
+    "asr_queue_wait_ms_live": "Offline harness uses synthetic enqueue timestamps; see concurrency_fake results.",
+    "translation_queue_wait_ms_live": "Offline harness uses synthetic enqueue timestamps; see concurrency_fake results."
+  }
+}

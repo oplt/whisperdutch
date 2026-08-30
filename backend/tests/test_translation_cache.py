@@ -6,7 +6,8 @@ from time import monotonic, sleep
 from types import SimpleNamespace
 
 from app.languages import UnsupportedLanguagePairError
-from app.translator import TRANSLATION_CACHE_SCHEMA_VERSION, TranslationEngine, _glossary_cache_version
+from app.translation_metadata import build_config_fingerprint
+from app.translator import TRANSLATION_CACHE_SCHEMA_VERSION, TranslationEngine, _cache_key_id, _glossary_cache_version
 
 
 def make_engine(max_cache_items: int = 4096) -> TranslationEngine:
@@ -41,6 +42,15 @@ def make_engine(max_cache_items: int = 4096) -> TranslationEngine:
     engine._cache_miss_translation_latencies_ms = deque(maxlen=1000)
     engine.durable_cache = None
     engine._durable_executor = None
+    engine._durable_futures = set()
+    engine.config_fingerprint = build_config_fingerprint(
+        translation_engine=engine.engine,
+        model_name=engine.model_name,
+        tokenizer_name=engine.tokenizer_name,
+        model_family=engine.model_family,
+        beam_size=engine.beam_size,
+        max_decoding_length=engine.max_decoding_length,
+    )
     _install_fake_backend(engine)
     return engine
 
@@ -84,10 +94,34 @@ def test_translation_cache_key_includes_translation_configuration() -> None:
 
     target_key = engine.cache_key("Hallo", target_language="de")
     engine.beam_size = 3
+    engine.config_fingerprint = build_config_fingerprint(
+        translation_engine=engine.engine,
+        model_name=engine.model_name,
+        tokenizer_name=engine.tokenizer_name,
+        model_family=engine.model_family,
+        beam_size=engine.beam_size,
+        max_decoding_length=engine.max_decoding_length,
+    )
     beam_key = engine.cache_key("Hallo")
     engine.model_name = "other-model"
+    engine.config_fingerprint = build_config_fingerprint(
+        translation_engine=engine.engine,
+        model_name=engine.model_name,
+        tokenizer_name=engine.tokenizer_name,
+        model_family=engine.model_family,
+        beam_size=engine.beam_size,
+        max_decoding_length=engine.max_decoding_length,
+    )
     model_key = engine.cache_key("Hallo")
     engine.model_family = "nllb"
+    engine.config_fingerprint = build_config_fingerprint(
+        translation_engine=engine.engine,
+        model_name=engine.model_name,
+        tokenizer_name=engine.tokenizer_name,
+        model_family=engine.model_family,
+        beam_size=engine.beam_size,
+        max_decoding_length=engine.max_decoding_length,
+    )
     family_key = engine.cache_key("Hallo")
     engine.glossary_version = "sha256:other"
     glossary_key = engine.cache_key("Hallo")
@@ -281,7 +315,7 @@ def test_translation_cache_is_lru_and_counts_evictions() -> None:
     assert engine._cache_get(key_a) == "A"
     engine._cache_set(key_c, "C")
 
-    assert list(engine.cache.keys()) == [key_a, key_c]
+    assert list(engine.cache.keys()) == [_cache_key_id(key_a), _cache_key_id(key_c)]
     assert engine.cache_info()["sets"] == 3
     assert engine.cache_info()["evictions"] == 1
 
@@ -417,3 +451,55 @@ def test_translation_cache_clear_removes_entries_and_preserves_stats() -> None:
     assert result["stats_before"]["hits"] == 1
     assert engine.cache_info()["size"] == 0
     assert engine.cache_info()["hits"] == 1
+
+
+def _warm_l1_cache(engine: TranslationEngine, *, unique_lines: int, repeats: int) -> None:
+    engine._translate_transformers_many = lambda texts: [f"translated:{text}" for text in texts]
+    corpus = [f"line-{index}" for index in range(unique_lines)]
+    for _ in range(repeats):
+        engine.translate_many(corpus)
+
+
+def _max_l1_hit_latency_ms(engine: TranslationEngine, *, samples: int, modulo: int) -> float:
+    engine._translate_transformers_many = lambda texts: (_ for _ in ()).throw(AssertionError("MT called"))
+    latencies: list[float] = []
+    for index in range(samples):
+        started = monotonic()
+        engine.translate(f"line-{index % modulo}")
+        latencies.append((monotonic() - started) * 1000)
+    return max(latencies)
+
+
+def _max_l1_miss_lookup_latency_ms(engine: TranslationEngine, *, samples: int) -> float:
+    engine._translate_transformers_many = lambda texts: [f"translated:{text}" for text in texts]
+    latencies: list[float] = []
+    for index in range(samples):
+        started = monotonic()
+        engine.translate(f"unique-miss-{index}")
+        latencies.append((monotonic() - started) * 1000)
+    return max(latencies)
+
+
+def test_translation_cache_l1_hit_latency_stays_under_five_ms() -> None:
+    zero_hit_engine = make_engine(max_cache_items=4096)
+    zero_hit_latency_ms = _max_l1_miss_lookup_latency_ms(zero_hit_engine, samples=128)
+    assert zero_hit_latency_ms < 5.0, f"zero-hit lookup latency {zero_hit_latency_ms:.3f}ms exceeded 5ms"
+
+    low_hit_engine = make_engine(max_cache_items=4096)
+    _warm_l1_cache(low_hit_engine, unique_lines=32, repeats=2)
+    low_hit_latency_ms = _max_l1_hit_latency_ms(low_hit_engine, samples=128, modulo=32)
+    assert low_hit_latency_ms < 5.0, f"low-hit latency {low_hit_latency_ms:.3f}ms exceeded 5ms"
+
+    high_hit_engine = make_engine(max_cache_items=4096)
+    _warm_l1_cache(high_hit_engine, unique_lines=32, repeats=8)
+    high_hit_latency_ms = _max_l1_hit_latency_ms(high_hit_engine, samples=256, modulo=32)
+    assert high_hit_latency_ms < 5.0, f"high-hit latency {high_hit_latency_ms:.3f}ms exceeded 5ms"
+
+
+def test_translation_cache_default_capacity_is_reasonable_for_measured_reuse() -> None:
+    engine = make_engine()
+    assert engine.max_cache_items == 4096
+    # Real corpus reuse is ~1.22%; 4096 entries is ample headroom without fuzzy matching.
+    estimated_bytes_per_entry = 96 + 64  # sha256 key + short subtitle payload
+    estimated_upper_bound_mb = (engine.max_cache_items * estimated_bytes_per_entry) / (1024 * 1024)
+    assert estimated_upper_bound_mb < 1.0

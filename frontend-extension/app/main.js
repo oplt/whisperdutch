@@ -29,12 +29,19 @@
         socket: this.socket,
         logger: this.logger,
         onLevel: level => this.view.setLevel(level),
-        onBackpressure: ({ result, droppedChunks }) => {
+        onBackpressure: ({ result, droppedChunks, bufferedAudioMs, state }) => {
+          const backlog = Number.isFinite(bufferedAudioMs) ? ` (~${bufferedAudioMs} ms queued)` : "";
           this.view.setStatus(result === "drop"
-            ? `Backend is catching up, ${droppedChunks} audio chunks skipped`
-            : "Backend is catching up");
+            ? `Backend is catching up, ${droppedChunks} audio chunks skipped${backlog}`
+            : `Backend is catching up${backlog}${state ? ` (${state})` : ""}`);
         },
-        onSilence: () => {
+        onSilence: ({ reason } = {}) => {
+          if (reason === "capture_loss") {
+            this.view.setStatus(this.capture.sourceType === "tab"
+              ? "Tab audio stopped. Restart playback in the captured video tab."
+              : "System audio stopped. Check the monitor source in Firefox and click Retry if needed.");
+            return;
+          }
           this.view.setStatus(this.capture.sourceType === "tab"
             ? "No tab sound detected. Start playback in the captured video tab."
             : "No system sound detected. In Firefox, select a monitor audio source instead of a microphone.");
@@ -67,6 +74,7 @@
       this.bindPrimaryControls();
       this.settings.renderSessions(this.store.listSessions());
       void this.loadPrivacy();
+      void this.loadTranslationCapabilities();
 
       if (!Number.isInteger(this.tabId) || this.tabId <= 0) {
         this.state.begin("starting-backend", "No source tab selected");
@@ -139,6 +147,7 @@
           await this.socket.close({ graceful: false });
           return;
         }
+        await this.loadTranslationCapabilities();
         this.sendConfig();
         this.startedAt = Date.now();
         this.state.transition("capturing", "Listening");
@@ -243,7 +252,11 @@
       }
       if (payload.type === "error" || payload.type === "config_error") {
         this.logger.log("error", "backend_error", { code: payload.code, message: payload.message });
-        this.view.setStatus(payload.message || "The backend reported an error.");
+        const message = payload.message || "The backend reported an error.";
+        this.view.setStatus(message);
+        if (payload.type === "config_error" && payload.code === "unsupported_language_pair") {
+          void this.loadTranslationCapabilities();
+        }
       }
     }
 
@@ -295,6 +308,16 @@
     async loadPrivacy() {
       const data = await root.BackendClient.fetchPrivacy().catch(() => null);
       if (data) this.settings.privacy.checked = Boolean(data.log_transcript_text);
+    }
+
+    async loadTranslationCapabilities() {
+      try {
+        const data = await root.BackendClient.fetchLanguages();
+        const values = this.settings.setTranslationCapabilities(data?.translation || null);
+        this.applyLanguages(values);
+      } catch (_error) {
+        this.settings.updateLanguagePairHelp("");
+      }
     }
 
     async updatePrivacy(enabled) {

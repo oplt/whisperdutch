@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 from fastapi import FastAPI, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from .asr import get_asr_engine
+from .constants import SERVICE_IDENTIFIER
 from .errors import map_exception
 from .history import session_history_store
+from .inference_runtime import get_inference_runtime
 from .languages import DEFAULT_SOURCE_LANGUAGE, DEFAULT_TARGET_LANGUAGE, language_catalog
 from .logger import current_log_file, get_logger, kv, should_log_text, tail_log
 from .metrics import session_metrics_store
@@ -24,9 +27,11 @@ from .ws_session import run_subtitle_session
 logger = get_logger("api")
 
 
-def _translation_cache_metrics() -> dict[str, Any]:
+def _translation_cache_metrics(*, basic: bool = False) -> dict[str, Any]:
+    if not runtime_state.is_ready():
+        return {"status": "warming"}
     try:
-        return get_translation_engine().cache_info()
+        return get_translation_engine().cache_info(basic=basic)
     except Exception as exc:
         logger.exception("translation_cache_metrics_failed")
         return {"error": f"{type(exc).__name__}: {exc}"}
@@ -58,9 +63,10 @@ def register_routes(app: FastAPI) -> None:
         return {
             "ok": True,
             "live": True,
-            "service": "local-live-subtitle-translator",
+            "service": SERVICE_IDENTIFIER,
             "version": "0.8.0-low-latency",
             "websocket": "/ws/subtitles",
+            "startup_timing": runtime_state.startup_timing_snapshot(),
         }
 
     @app.get("/api/languages")
@@ -87,6 +93,7 @@ def register_routes(app: FastAPI) -> None:
             "phase": runtime_state.phase,
             "last_error": runtime_state.last_error,
             "warmed_up_at": runtime_state.warmed_up_at,
+            "startup_timing": runtime_state.startup_timing_snapshot(),
         }
 
     @app.get("/debug/device")
@@ -111,6 +118,7 @@ def register_routes(app: FastAPI) -> None:
                 "phase": runtime_state.phase,
                 "last_error": runtime_state.last_error,
                 "warmed_up_at": runtime_state.warmed_up_at,
+                "startup_timing": runtime_state.startup_timing_snapshot(),
                 "startup_status": read_startup_status(),
             },
             "asr": asr_info,
@@ -130,17 +138,22 @@ def register_routes(app: FastAPI) -> None:
                 "translation_cache_backend": (translation_info or {}).get("translation_cache", {}).get("backend"),
                 "sentence_mode": True,
                 "glossary_enabled": os.getenv("GLOSSARY_ENABLED", "0") == "1",
+                "inference": get_inference_runtime().metrics_snapshot(),
                 "asr_initial_prompt_default": "empty",
                 "log_transcript_text": should_log_text(),
                 "session_history": {
                     "enabled": session_history_store.enabled,
                     "db_path": str(session_history_store.db_path),
+                    **session_history_store.writer_stats(),
                 },
             },
         }
 
     @app.post("/api/cache/translation/clear")
-    def translation_cache_clear(reason: str = "manual") -> dict[str, Any]:
+    def translation_cache_clear(response: Response, reason: str = "manual") -> dict[str, Any]:
+        if not runtime_state.is_ready():
+            response.status_code = 503
+            return {"ok": False, "message": "Translation engine is still warming up."}
         result = get_translation_engine().clear_cache(reason)
         return {
             "ok": True,
@@ -155,16 +168,44 @@ def register_routes(app: FastAPI) -> None:
 
     @app.get("/debug/sessions")
     async def debug_sessions() -> dict[str, Any]:
-        return {"ok": True, "sessions": session_metrics_store.recent()}
+        return {"ok": True, "sessions": session_metrics_store.recent(include_samples=True)}
 
     @app.get("/metrics")
     async def metrics() -> dict[str, Any]:
+        started = time.perf_counter()
         ready = runtime_state.is_ready()
+
+        sessions_started = time.perf_counter()
+        sessions = session_metrics_store.recent(include_samples=False)
+        sessions_ms = (time.perf_counter() - sessions_started) * 1000
+
+        cache_started = time.perf_counter()
+        translation_cache = _translation_cache_metrics(basic=True)
+        cache_ms = (time.perf_counter() - cache_started) * 1000
+
+        inference_started = time.perf_counter()
+        inference = get_inference_runtime().metrics_snapshot()
+        inference_ms = (time.perf_counter() - inference_started) * 1000
+
+        history_started = time.perf_counter()
+        session_history = session_history_store.writer_stats()
+        history_ms = (time.perf_counter() - history_started) * 1000
+
+        total_ms = (time.perf_counter() - started) * 1000
         return {
             "ok": True,
             "ready": ready,
-            "sessions": session_metrics_store.recent(),
-            "translation_cache": _translation_cache_metrics(),
+            "sessions": sessions,
+            "translation_cache": translation_cache,
+            "inference": inference,
+            "session_history": session_history,
+            "timing_ms": {
+                "total": round(total_ms, 3),
+                "sessions": round(sessions_ms, 3),
+                "translation_cache": round(cache_ms, 3),
+                "inference": round(inference_ms, 3),
+                "session_history": round(history_ms, 3),
+            },
         }
 
     @app.get("/debug/session/{client_id}")
@@ -228,6 +269,12 @@ def register_routes(app: FastAPI) -> None:
             return {"ok": False, "code": "invalid_glossary", "message": "Glossary rule is invalid.", "debug": safe.debug}
 
         try:
+            if not runtime_state.is_ready():
+                return {
+                    "ok": True,
+                    "rules": list_glossary_rules(),
+                    "cache": {"cleared": 0, "status": "warming"},
+                }
             cache_result = get_translation_engine().refresh_glossary_version()
         except Exception as exc:
             response.status_code = 503

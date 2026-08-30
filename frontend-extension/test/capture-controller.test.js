@@ -19,7 +19,8 @@ function createHarness(options = {}) {
     disconnect() {}
   };
   const gains = [];
-  let silenceCallback = null;
+  const timers = new Map();
+  let nextTimerId = 1;
   const clearedTimers = [];
 
   class FakeAudioContext {
@@ -94,13 +95,16 @@ function createHarness(options = {}) {
     socket: { sendAudio: () => "sent" },
     onSilence: options.onSilence,
     onAudioRestored: options.onAudioRestored,
-    silenceTimeoutMs: 1000,
-    setTimeout(callback) {
-      silenceCallback = callback;
-      return 7;
+    silenceTimeoutMs: options.silenceTimeoutMs ?? 1000,
+    captureLossTimeoutMs: options.captureLossTimeoutMs ?? 5000,
+    setTimeout(callback, delay) {
+      const id = nextTimerId++;
+      timers.set(id, { callback, delay });
+      return id;
     },
     clearTimeout(timer) {
       clearedTimers.push(timer);
+      timers.delete(timer);
     }
   });
 
@@ -112,7 +116,16 @@ function createHarness(options = {}) {
     streamOptions,
     track,
     clearedTimers,
-    runSilenceTimer: () => silenceCallback?.()
+    timers,
+    runTimer(id) {
+      timers.get(id)?.callback();
+    },
+    runInitialSilenceTimer() {
+      controller.silenceTimer && timers.get(controller.silenceTimer)?.callback();
+    },
+    runCaptureLossTimer() {
+      controller.captureLossTimer && timers.get(controller.captureLossTimer)?.callback();
+    }
   };
 }
 
@@ -221,13 +234,14 @@ test("Firefox rejects a stream without an audio track", async () => {
 });
 
 test("silent Brave capture warns instead of appearing healthy forever", async () => {
-  let warnings = 0;
-  const harness = createHarness({ onSilence: () => { warnings += 1; } });
+  const warnings = [];
+  const harness = createHarness({ onSilence: payload => warnings.push(payload) });
 
   await harness.controller.start(42);
-  harness.runSilenceTimer();
+  harness.runInitialSilenceTimer();
 
-  assert.equal(warnings, 1);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].reason, "initial_silence");
   await harness.controller.close();
 });
 
@@ -237,10 +251,79 @@ test("audible worklet input cancels the silence warning", async () => {
 
   await harness.controller.start(42);
   harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.2 } });
-  harness.runSilenceTimer();
+  harness.runInitialSilenceTimer();
 
   assert.equal(warnings, 0);
-  assert.ok(harness.clearedTimers.includes(7));
+  assert.ok(harness.clearedTimers.includes(harness.controller.silenceTimer) || harness.controller.silenceTimer === null);
+  await harness.controller.close();
+});
+
+test("mid-session capture loss warns after prolonged silence", async () => {
+  const warnings = [];
+  const harness = createHarness({
+    captureLossTimeoutMs: 1500,
+    onSilence: payload => warnings.push(payload)
+  });
+
+  await harness.controller.start(42);
+  harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.2 } });
+  assert.ok(harness.controller.captureLossTimer);
+
+  harness.runCaptureLossTimer();
+
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].reason, "capture_loss");
+  await harness.controller.close();
+});
+
+test("brief mid-session pauses do not warn before capture-loss timeout", async () => {
+  let warnings = 0;
+  const harness = createHarness({
+    captureLossTimeoutMs: 5000,
+    onSilence: () => { warnings += 1; }
+  });
+
+  await harness.controller.start(42);
+  harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.2 } });
+  const firstLossTimer = harness.controller.captureLossTimer;
+  harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.15 } });
+  assert.notEqual(harness.controller.captureLossTimer, firstLossTimer);
+
+  harness.runTimer(firstLossTimer);
+
+  assert.equal(warnings, 0);
+  await harness.controller.close();
+});
+
+test("audio restored after mid-session capture-loss warning clears status", async () => {
+  let restored = 0;
+  const harness = createHarness({
+    captureLossTimeoutMs: 1500,
+    onAudioRestored: () => { restored += 1; }
+  });
+
+  await harness.controller.start(42);
+  harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.2 } });
+  harness.runCaptureLossTimer();
+  harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.2 } });
+
+  assert.equal(restored, 1);
+  await harness.controller.close();
+});
+
+test("pause suppresses capture-loss warnings until listening resumes", async () => {
+  let warnings = 0;
+  const harness = createHarness({
+    captureLossTimeoutMs: 1500,
+    onSilence: () => { warnings += 1; }
+  });
+
+  await harness.controller.start(42);
+  harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.2 } });
+  harness.controller.setPaused(true);
+  harness.runCaptureLossTimer();
+
+  assert.equal(warnings, 0);
   await harness.controller.close();
 });
 
@@ -249,7 +332,7 @@ test("audio arriving after a silence warning restores listening status", async (
   const harness = createHarness({ onAudioRestored: () => { restored += 1; } });
 
   await harness.controller.start(42);
-  harness.runSilenceTimer();
+  harness.runInitialSilenceTimer();
   harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.2 } });
 
   assert.equal(restored, 1);

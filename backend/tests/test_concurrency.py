@@ -31,6 +31,91 @@ def make_isolated_session(client_id: str) -> SubtitleWebSocketSession:
     return session
 
 
+def test_concurrent_multilingual_tokenizer_state_stays_isolated() -> None:
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from app import translation_backends
+    from app.languages import NLLB_LANGUAGE_CODES
+
+    class TrackingTokenizer:
+        def __init__(self) -> None:
+            self.src_lang: str | None = None
+            self._lock = threading.Lock()
+            self.observed: list[tuple[str, str, str]] = []
+            self._code_ids = {code: index + 100 for index, code in enumerate(NLLB_LANGUAGE_CODES.values())}
+
+        def encode(self, text: str, **_kwargs) -> list[int]:
+            with self._lock:
+                self.observed.append((threading.current_thread().name, self.src_lang or "", text))
+            time.sleep(0.002)
+            return [1]
+
+        def convert_ids_to_tokens(self, ids: list[int]) -> list[str]:
+            for code, code_id in self._code_ids.items():
+                if ids == [code_id]:
+                    return [code]
+            return ["token"]
+
+        def convert_tokens_to_ids(self, tokens: list[str]) -> list[int]:
+            if tokens[0] in self._code_ids:
+                return [self._code_ids[tokens[0]]]
+            return [0]
+
+        def decode(self, _ids: list[int], **_kwargs) -> str:
+            return "ok"
+
+    tokenizer = TrackingTokenizer()
+    tokenizer_lock = threading.RLock()
+
+    class Translator:
+        def translate_batch(self, batches: list[list[str]], **_kwargs):
+            time.sleep(0.003)
+            return [SimpleNamespace(hypotheses=[["ok"]]) for _batch in batches]
+
+    backend = translation_backends.NLLBCTranslate2Backend(
+        tokenizer=tokenizer,
+        translator=Translator(),
+        beam_size=1,
+        max_decoding_length=32,
+        tokenizer_lock=tokenizer_lock,
+    )
+
+    scenarios = [
+        ("worker-nl-en", "nl", "en", "Hallo"),
+        ("worker-de-fr", "de", "fr", "Guten Tag"),
+        ("worker-tr-en", "tr", "en", "Merhaba"),
+    ]
+    barrier = threading.Barrier(len(scenarios))
+    errors: list[Exception] = []
+
+    def worker(name: str, source: str, target: str, text: str) -> None:
+        try:
+            for _ in range(25):
+                barrier.wait(timeout=2)
+                backend.translate_many([text], source_language=source, target_language=target)
+        except Exception as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=scenario, name=scenario[0], daemon=True) for scenario in scenarios
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    expected_codes = {
+        "Hallo": NLLB_LANGUAGE_CODES["nl"],
+        "Guten Tag": NLLB_LANGUAGE_CODES["de"],
+        "Merhaba": NLLB_LANGUAGE_CODES["tr"],
+    }
+    for _thread_name, src_lang, text in tokenizer.observed:
+        assert src_lang == expected_codes[text]
+
+
 def test_model_singletons_are_shared_across_sessions(monkeypatch) -> None:
     created: list[str] = []
 
@@ -93,6 +178,7 @@ def test_concurrent_translation_cache_lookups_remain_thread_safe() -> None:
     engine._single_flight_waits = 0
     engine.durable_cache = None
     engine._durable_executor = None
+    engine.config_fingerprint = "test-fingerprint"
 
     barrier = threading.Barrier(8)
     errors: list[Exception] = []
@@ -102,7 +188,7 @@ def test_concurrent_translation_cache_lookups_remain_thread_safe() -> None:
             barrier.wait(timeout=2)
             key = engine.cache_key(f"line-{index % 4}")
             with engine._cache_lock:
-                engine.cache.setdefault(key, f"translation-{index % 4}")
+                engine.cache.setdefault(translator._cache_key_id(key), f"translation-{index % 4}")
                 engine._cache_hits += 1
         except Exception as exc:  # pragma: no cover - surfaced below
             errors.append(exc)

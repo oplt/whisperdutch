@@ -1,0 +1,45 @@
+{
+  "benchmark": "phase11-startup-warmup",
+  "sequential": {
+    "ready": true,
+    "elapsed_ms": 4081.18,
+    "startup_timing": {
+      "strategy": "sequential",
+      "process_started_at": 1788088387.7015407,
+      "live_ms": null,
+      "model_ready_ms": 4080.983,
+      "first_ws_ready_ms": null,
+      "phases_ms": {
+        "loading_asr": 1480,
+        "loading_translation": 2409,
+        "warming_asr": 21,
+        "warming_translation": 168
+      },
+      "total_warmup_ms": 4080
+    },
+    "strategy": "sequential",
+    "ok": true,
+    "wall_ms": 6098.329
+  },
+  "parallel": {
+    "ready": true,
+    "elapsed_ms": 3622.0,
+    "startup_timing": {
+      "strategy": "parallel",
+      "process_started_at": 1788088393.7946808,
+      "live_ms": null,
+      "model_ready_ms": 3621.82,
+      "first_ws_ready_ms": null,
+      "phases_ms": {
+        "loading_models_parallel": 3434,
+        "warming_models_parallel": 186
+      },
+      "total_warmup_ms": 3621
+    },
+    "strategy": "parallel",
+    "ok": true,
+    "wall_ms": 5628.946
+  },
+  "recommendation": "parallel",
+  "default_strategy": "sequential"
+}

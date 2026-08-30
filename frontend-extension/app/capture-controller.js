@@ -1,5 +1,7 @@
 (function (root) {
   const TARGET_SAMPLE_RATE = 16000;
+  const DEFAULT_AUDIO_LEVEL_THRESHOLD = 0.005;
+  const DEFAULT_CAPTURE_LOSS_TIMEOUT_MS = 60000;
 
   class CaptureController {
     constructor(options = {}) {
@@ -15,7 +17,14 @@
       this.onAudioRestored = options.onAudioRestored || (() => {});
       this.setTimeout = options.setTimeout || root.setTimeout.bind(root);
       this.clearTimeout = options.clearTimeout || root.clearTimeout.bind(root);
+      this.now = options.now || (() => Date.now());
       this.silenceTimeoutMs = Math.max(1000, Number(options.silenceTimeoutMs) || 8000);
+      this.captureLossTimeoutMs = Math.max(
+        this.silenceTimeoutMs + 1000,
+        Number(options.captureLossTimeoutMs) || DEFAULT_CAPTURE_LOSS_TIMEOUT_MS
+      );
+      this.audioLevelThreshold = Number(options.audioLevelThreshold) || DEFAULT_AUDIO_LEVEL_THRESHOLD;
+      this.batchDurationMs = Number(options.batchDurationMs) || 20;
       this.stream = null;
       this.context = null;
       this.source = null;
@@ -30,8 +39,10 @@
       this.volume = 1;
       this.muted = false;
       this.silenceTimer = null;
+      this.captureLossTimer = null;
       this.heardAudio = false;
       this.silenceWarned = false;
+      this.lastAudibleAt = 0;
       this.sourceType = this.supportsTabCapture() ? "tab" : "audio-input";
     }
 
@@ -62,7 +73,11 @@
       this.processorSink = context.createGain();
       this.processorSink.gain.value = 0;
       this.applyMonitor();
-      this.worklet.port.postMessage({ type: "config", targetSampleRate: TARGET_SAMPLE_RATE });
+      this.worklet.port.postMessage({
+        type: "config",
+        targetSampleRate: TARGET_SAMPLE_RATE,
+        batchDurationMs: this.batchDurationMs
+      });
       this.source.connect(this.worklet);
       // Keep the processor in Brave's destination graph. A dangling AudioWorklet
       // can be treated as inaudible and stop receiving render callbacks.
@@ -177,28 +192,34 @@
       const pcm = event.data?.pcm || event.data;
       const level = Number(event.data?.level) || 0;
       this.onLevel(level);
-      if (level > 0.005 && !this.heardAudio) {
-        this.heardAudio = true;
-        this.cancelSilenceWarning();
-        if (this.silenceWarned) this.onAudioRestored();
+      if (level > this.audioLevelThreshold) {
+        this._noteAudibleActivity(level);
       }
       if (!this.acceptingAudio || this.paused) return;
       const result = this.socket.sendAudio(pcm);
-      if (result !== "drop" && result !== "warn") return;
-      if (result === "drop") this.droppedChunks += 1;
+      if (result === "sent") return;
+      const stats = typeof this.socket.getBackpressureStats === "function"
+        ? this.socket.getBackpressureStats()
+        : { droppedChunks: this.droppedChunks, bufferedAudioMs: 0, state: result };
+      if (result === "drop") this.droppedChunks = stats.droppedChunks;
       const now = Date.now();
       if (now - this.lastBackpressureAt < 1500) return;
       this.lastBackpressureAt = now;
-      this.onBackpressure({ result, droppedChunks: this.droppedChunks });
+      this.onBackpressure({ result, ...stats });
       this.logger?.log(result === "drop" ? "warn" : "debug", "websocket_backpressure", {
         result,
-        droppedChunks: this.droppedChunks
+        ...stats
       });
     }
 
     setPaused(paused) {
       if (!this.active) return false;
       this.paused = Boolean(paused);
+      if (this.paused) {
+        this._cancelCaptureLossWatch();
+      } else if (this.heardAudio) {
+        this._scheduleCaptureLossWatch();
+      }
       return this.paused;
     }
 
@@ -217,26 +238,78 @@
       this.acceptingAudio = false;
       this.paused = false;
       this.generation += 1;
-      this.cancelSilenceWarning();
+      this._cancelSilenceWatchdog();
     }
 
     watchForSilence() {
-      this.cancelSilenceWarning();
+      this._cancelSilenceWatchdog();
       this.heardAudio = false;
       this.silenceWarned = false;
+      this.lastAudibleAt = 0;
       this.silenceTimer = this.setTimeout(() => {
         this.silenceTimer = null;
         if (this.acceptingAudio && !this.paused && !this.heardAudio) {
-          this.silenceWarned = true;
-          this.onSilence();
+          this._raiseSilenceWarning("initial_silence", this.silenceTimeoutMs);
         }
       }, this.silenceTimeoutMs);
     }
 
-    cancelSilenceWarning() {
+    _noteAudibleActivity(_level) {
+      const now = this.now();
+      this.lastAudibleAt = now;
+      const wasSilentWarning = this.silenceWarned;
+      if (!this.heardAudio) {
+        this.heardAudio = true;
+        this._cancelInitialSilenceWatch();
+      }
+      if (wasSilentWarning) {
+        this.silenceWarned = false;
+        this.onAudioRestored();
+      }
+      if (this.acceptingAudio && !this.paused) {
+        this._scheduleCaptureLossWatch();
+      }
+    }
+
+    _scheduleCaptureLossWatch() {
+      this._cancelCaptureLossWatch();
+      this.captureLossTimer = this.setTimeout(() => {
+        this.captureLossTimer = null;
+        if (!this.acceptingAudio || this.paused || !this.heardAudio) return;
+        this._raiseSilenceWarning("capture_loss", Math.max(this.captureLossTimeoutMs, this.now() - this.lastAudibleAt));
+      }, this.captureLossTimeoutMs);
+    }
+
+    _raiseSilenceWarning(reason, silentForMs) {
+      if (this.silenceWarned) return;
+      this.silenceWarned = true;
+      this.onSilence({ reason, silentForMs });
+      this.logger?.log("warn", "capture_silence_detected", {
+        reason,
+        silentForMs,
+        sourceType: this.sourceType
+      });
+    }
+
+    _cancelInitialSilenceWatch() {
       if (this.silenceTimer === null) return;
       this.clearTimeout(this.silenceTimer);
       this.silenceTimer = null;
+    }
+
+    _cancelCaptureLossWatch() {
+      if (this.captureLossTimer === null) return;
+      this.clearTimeout(this.captureLossTimer);
+      this.captureLossTimer = null;
+    }
+
+    _cancelSilenceWatchdog() {
+      this._cancelInitialSilenceWatch();
+      this._cancelCaptureLossWatch();
+    }
+
+    cancelSilenceWarning() {
+      this._cancelSilenceWatchdog();
     }
 
     async close() {
@@ -280,7 +353,12 @@
     }
   }
 
-  const api = { CaptureController, TARGET_SAMPLE_RATE };
+  const api = {
+    CaptureController,
+    TARGET_SAMPLE_RATE,
+    DEFAULT_AUDIO_LEVEL_THRESHOLD,
+    DEFAULT_CAPTURE_LOSS_TIMEOUT_MS
+  };
   root.SubtitleApp = Object.assign(root.SubtitleApp || {}, api);
   if (typeof module !== "undefined") module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);

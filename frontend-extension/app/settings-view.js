@@ -21,7 +21,9 @@
       this.diagnosticsOutput = byId("diagnosticsOutput");
       this.logsOutput = byId("logsOutput");
       this.monitorHelp = byId("monitorHelp");
+      this.languagePairHelp = byId("languagePairHelp");
       this.deviceInputs = Array.from(documentRef.querySelectorAll('input[name="asrDevice"]'));
+      this.translationCapabilities = null;
       this.contextTimer = null;
       root.SubtitleApp?.populateLanguageSelect?.(this.sourceLanguage, documentRef);
       root.SubtitleApp?.populateLanguageSelect?.(this.targetLanguage, documentRef);
@@ -87,15 +89,48 @@
       };
     }
 
+    setTranslationCapabilities(capabilities) {
+      this.translationCapabilities = capabilities || null;
+      this.refreshLanguageOptions();
+    }
+
+    refreshLanguageOptions() {
+      if (!this.translationCapabilities) {
+        this.updateLanguagePairHelp("");
+        return this.values();
+      }
+      const selected = root.SubtitleApp.applyTranslationCapabilities(
+        this.sourceLanguage,
+        this.targetLanguage,
+        this.translationCapabilities,
+        this.document
+      );
+      this.storage.setItem("subtitleSourceLanguage", selected.sourceLang);
+      this.storage.setItem("subtitleTargetLanguage", selected.targetLang);
+      this.updateLanguagePairHelp(root.SubtitleApp.translationCapabilityHint(this.translationCapabilities));
+      return {
+        ...this.values(),
+        sourceLang: selected.sourceLang,
+        targetLang: selected.targetLang
+      };
+    }
+
+    updateLanguagePairHelp(message) {
+      if (!this.languagePairHelp) return;
+      this.languagePairHelp.textContent = message || "";
+      this.languagePairHelp.hidden = !message;
+    }
+
     bind(callbacks = {}) {
       this.quality.addEventListener("change", () => {
         this.storage.setItem("subtitleQualityMode", this.quality.value);
         callbacks.onConfig?.(this.values());
       });
       const languagesChanged = () => {
-        this.storage.setItem("subtitleSourceLanguage", this.sourceLanguage.value);
-        this.storage.setItem("subtitleTargetLanguage", this.targetLanguage.value);
-        (callbacks.onLanguages || callbacks.onConfig)?.(this.values());
+        const values = this.refreshLanguageOptions();
+        this.storage.setItem("subtitleSourceLanguage", values.sourceLang);
+        this.storage.setItem("subtitleTargetLanguage", values.targetLang);
+        (callbacks.onLanguages || callbacks.onConfig)?.(values);
       };
       this.sourceLanguage.addEventListener("change", languagesChanged);
       this.targetLanguage.addEventListener("change", languagesChanged);

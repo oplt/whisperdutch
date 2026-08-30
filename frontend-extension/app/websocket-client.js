@@ -1,5 +1,6 @@
 (function (root) {
   const OPEN = 1;
+  const { AudioBackpressureController } = root.SubtitleApp || require("./audio-backpressure.js");
 
   class SubtitleSocket {
     constructor(options = {}) {
@@ -8,6 +9,9 @@
       this.onMessage = options.onMessage || (() => {});
       this.onDisconnect = options.onDisconnect || (() => {});
       this.onReconnectAttempt = options.onReconnectAttempt || (() => {});
+      this.backpressure = new (options.AudioBackpressureController || AudioBackpressureController)(
+        options.backpressure || {}
+      );
       this.socket = null;
       this.generation = 0;
       this.recoveryGeneration = 0;
@@ -96,12 +100,36 @@
       return true;
     }
 
-    sendAudio(buffer, dropBytes = 128 * 1024, warnBytes = 32 * 1024) {
+    sendAudio(buffer) {
       if (!this.isOpen || !buffer?.byteLength) return "closed";
-      if (this.socket.bufferedAmount > dropBytes) return "drop";
-      const result = this.socket.bufferedAmount > warnBytes ? "warn" : "sent";
+
+      const evaluation = this.backpressure.evaluate(this.socket.bufferedAmount);
+      if (evaluation.action === "drop") {
+        this.backpressure.recordDrop();
+        this.logger?.log("debug", "websocket_audio_dropped", evaluation.stats);
+        return "drop";
+      }
+
+      if (evaluation.needsGapReset) {
+        this.send({
+          type: "audio_gap",
+          reason: "backpressure",
+          buffered_audio_ms: Math.round(evaluation.bufferedAudioMs),
+          dropped_chunks: evaluation.stats.droppedChunks
+        });
+        this.backpressure.noteGapSent();
+        this.logger?.log("info", "websocket_audio_gap", evaluation.stats);
+      }
+
       this.socket.send(buffer);
-      return result;
+      if (evaluation.action === "warn") {
+        this.logger?.log("debug", "websocket_backpressure_warn", evaluation.stats);
+      }
+      return evaluation.action === "warn" ? "warn" : "sent";
+    }
+
+    getBackpressureStats() {
+      return this.backpressure.snapshot();
     }
 
     flush(timeoutMs = 8000) {

@@ -293,6 +293,12 @@
     return data;
   }
 
+  async function fetchLanguages() {
+    const response = await request(url("/api/languages"), { cache: "no-store" });
+    if (!response.ok) throw new Error(`Language catalog request failed (${response.status}).`);
+    return response.json();
+  }
+
   const api = {
     DEFAULT_BASE_URL,
     DEFAULT_WS_URL,
@@ -310,6 +316,7 @@
     findHealthyConnection,
     postClientLog,
     fetchBackendLogs,
+    fetchLanguages,
     fetchGlossary,
     saveGlossaryRules,
     fetchPrivacy,

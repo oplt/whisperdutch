@@ -19,6 +19,9 @@ from pathlib import Path
 HOST_NAME = "com.polatozgur111.dutch_subtitle_backend"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = PROJECT_ROOT / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+from app.constants import SERVICE_IDENTIFIER  # noqa: E402, I001
 RUN_SCRIPT = BACKEND_DIR / "run_gpu.sh"
 LOG_DIR = BACKEND_DIR / "logs"
 
@@ -85,7 +88,7 @@ def is_backend_healthy(port: int = DEFAULT_PORT, timeout: float = 0.6) -> bool:
             if response.status != 200:
                 return False
             data = json.loads(response.read().decode("utf-8"))
-            return bool(data.get("ok")) and data.get("service") == "dutch-live-subtitle-translator"
+            return bool(data.get("ok")) and data.get("service") == SERVICE_IDENTIFIER
     except Exception:
         return False
 

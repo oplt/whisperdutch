@@ -1,6 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+require("../app/audio-backpressure.js");
 const { SubtitleSocket } = require("../app/websocket-client.js");
+const { PCM16_MONO_16K_BYTES_PER_SECOND } = require("../app/audio-backpressure.js");
 
 class FakeWebSocket {
   constructor(url) {
@@ -32,6 +34,10 @@ class FakeWebSocket {
 }
 
 FakeWebSocket.instances = [];
+
+function bytesForMs(ms) {
+  return Math.round((ms / 1000) * PCM16_MONO_16K_BYTES_PER_SECOND);
+}
 
 test("SubtitleSocket ignores stale socket callbacks after replacement", async () => {
   FakeWebSocket.instances = [];
@@ -68,7 +74,7 @@ test("SubtitleSocket recovery stops when cancelled", async () => {
   assert.equal(result, null);
 });
 
-test("sendAudio reports backpressure thresholds", async () => {
+test("sendAudio uses audio-time backpressure thresholds", async () => {
   FakeWebSocket.instances = [];
   const socket = new SubtitleSocket({ WebSocketImpl: FakeWebSocket });
   const connectPromise = socket.connect("ws://127.0.0.1:8000/ws/subtitles");
@@ -76,8 +82,31 @@ test("sendAudio reports backpressure thresholds", async () => {
   ws.open();
   await connectPromise;
 
-  ws.bufferedAmount = 40 * 1024;
+  ws.bufferedAmount = bytesForMs(700);
   assert.equal(socket.sendAudio(new ArrayBuffer(8)), "warn");
-  ws.bufferedAmount = 200 * 1024;
+
+  ws.bufferedAmount = bytesForMs(1300);
   assert.equal(socket.sendAudio(new ArrayBuffer(8)), "drop");
+  assert.equal(socket.getBackpressureStats().droppedChunks, 1);
+});
+
+test("sendAudio emits audio_gap before resuming after dropping", async () => {
+  FakeWebSocket.instances = [];
+  const socket = new SubtitleSocket({ WebSocketImpl: FakeWebSocket });
+  const connectPromise = socket.connect("ws://127.0.0.1:8000/ws/subtitles");
+  const ws = FakeWebSocket.instances[0];
+  ws.open();
+  await connectPromise;
+
+  ws.bufferedAmount = bytesForMs(1300);
+  assert.equal(socket.sendAudio(new ArrayBuffer(8)), "drop");
+
+  ws.bufferedAmount = bytesForMs(300);
+  assert.equal(socket.sendAudio(new ArrayBuffer(16)), "warn");
+
+  const gapMessage = ws.sent.find(item => typeof item === "string" && item.includes("audio_gap"));
+  assert.ok(gapMessage);
+  assert.match(gapMessage, /"type":"audio_gap"/);
+  assert.equal(ws.sent.at(-1)?.byteLength, 16);
+  assert.equal(socket.getBackpressureStats().gapEvents, 1);
 });
