@@ -74,6 +74,7 @@ def test_concurrent_translation_cache_lookups_remain_thread_safe() -> None:
     engine.engine = "fake"
     engine.model_name = "fake-model"
     engine.tokenizer_name = "fake-tokenizer"
+    engine.model_family = "m2m100"
     engine.beam_size = 1
     engine.max_decoding_length = 160
     engine.cache_schema_version = translator.TRANSLATION_CACHE_SCHEMA_VERSION

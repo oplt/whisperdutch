@@ -13,6 +13,7 @@ def make_engine_with_store(store: DurableTranslationCache) -> TranslationEngine:
     engine.engine = "fake"
     engine.model_name = "fake-model"
     engine.tokenizer_name = "fake-tokenizer"
+    engine.model_family = "m2m100"
     engine.beam_size = 1
     engine.max_decoding_length = 160
     engine.cache_schema_version = TRANSLATION_CACHE_SCHEMA_VERSION
@@ -21,6 +22,7 @@ def make_engine_with_store(store: DurableTranslationCache) -> TranslationEngine:
     engine.cache_backend = "sqlite"
     engine.cache_ttl_seconds = store.ttl_seconds
     engine._cache_lock = RLock()
+    engine._model_lock = RLock()
     engine._inflight = {}
     engine._cache_generation = 0
     engine.max_cache_items = store.max_items
@@ -38,7 +40,22 @@ def make_engine_with_store(store: DurableTranslationCache) -> TranslationEngine:
     engine._cache_miss_translation_latencies_ms = deque(maxlen=1000)
     engine.durable_cache = store
     engine._durable_executor = None
+    _install_fake_backend(engine)
     return engine
+
+
+def _install_fake_backend(engine: TranslationEngine) -> None:
+    class FakeBackend:
+        model_family = engine.model_family
+
+        def translate_many(self, texts: list[str], *, source_language: str, target_language: str) -> list[str]:
+            fn = engine._translate_transformers_many
+            try:
+                return fn(texts, source_language=source_language, target_language=target_language)
+            except TypeError:
+                return fn(texts)
+
+    engine.backend = FakeBackend()
 
 
 def test_durable_cache_persists_across_store_instances(tmp_path) -> None:

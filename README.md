@@ -24,7 +24,7 @@ Streaming video, news, lectures, and podcasts often lack subtitles in the langua
 
 1. A browser extension captures **tab audio** (not microphone input).
 2. PCM audio streams over a **local WebSocket** to a FastAPI backend.
-3. The backend segments speech, runs language-directed ASR with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), assembles sentences, and translates them with multilingual **M2M100** through CTranslate2.
+3. The backend segments speech, runs language-directed ASR with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`large-v3-turbo` by default), builds word-aware subtitle cues, and translates with **NLLB-200-distilled-600M** or **M2M100** through CTranslate2.
 4. Source text and its translation return to the extension and render in a popup subtitle window.
 
 The system is designed for **interactive latency**: partial source-language previews, bounded queues under load, final-over-partial ASR priority, and selectable **fast / balanced / quality** profiles that trade speed against accuracy.
@@ -37,8 +37,9 @@ Privacy is a first-class constraint. The backend binds to `127.0.0.1`, the exten
 
 Verified capabilities in the current codebase:
 
-- **Multilingual live ASR** with faster-whisper (Whisper `small` by default)
-- **Selectable source and translation languages** via CTranslate2 M2M100 (`facebook/m2m100_418M`)
+- **Multilingual live ASR** with faster-whisper (`large-v3-turbo` default; `small` still supported)
+- **Word-level timestamps and Silero VAD** on final ASR paths (configurable)
+- **Selectable source and translation languages** via CTranslate2 NLLB or M2M100
 - **Chrome tab audio capture** through `tabCapture` and an AudioWorklet resampler (→ 16 kHz PCM)
 - **Dual-column subtitle window** — original text and translation with scrollable session history
 - **Processing modes** — `fast`, `balanced`, `quality` (beam size and segmentation differ per mode)
@@ -76,9 +77,9 @@ flowchart LR
 
     subgraph Pipeline
         G[Speech segmenter]
-        H[faster-whisper ASR]
-        I[Sentence assembler]
-        J[CTranslate2 M2M100]
+        H[faster-whisper ASR + VAD]
+        I[Subtitle cue assembler]
+        J[CTranslate2 NLLB/M2M100]
     end
 
     A --> B
@@ -209,7 +210,7 @@ source .venv/bin/activate
 make install-backend
 ```
 
-This creates `backend/.venv`, installs pinned runtime dependencies from `backend/requirements.lock`, and dev tools from `backend/requirements-dev.txt`.
+This creates `backend/.venv` and installs runtime + dev dependencies from `backend/requirements-dev.txt` (which includes `requirements.txt`).
 
 Copy and edit environment defaults:
 
@@ -233,24 +234,40 @@ The server listens on `127.0.0.1:8000` by default (`BACKEND_HOST`, `BACKEND_PORT
 
 ### Translation model
 
-Convert multilingual M2M100 to CTranslate2 (recommended path):
+Prepare a CTranslate2 translation model (NLLB recommended; M2M100 still supported):
+
+```bash
+backend/scripts/prepare_translation_ct2.sh nllb
+# or
+backend/scripts/prepare_translation_ct2.sh m2m100
+```
+
+Or from the repository root:
 
 ```bash
 make prepare-models
 ```
 
-This runs `backend/scripts/prepare_translation_ct2.sh`, producing `backend/models/m2m100-418m-ct2/`.
-
-Ensure these variables match (defaults in `.env.example`):
+NLLB example configuration (defaults in `.env.example`):
 
 ```bash
-TRANSLATION_ENGINE=auto          # prefers ctranslate2 when model path exists
+TRANSLATION_ENGINE=auto
+TRANSLATION_MODEL_FAMILY=nllb
+TRANSLATION_MODEL=models/nllb-200-distilled-600m-ct2
+TRANSLATION_TOKENIZER=facebook/nllb-200-distilled-600M
+```
+
+M2M100 backward-compatible configuration:
+
+```bash
 TRANSLATION_MODEL_FAMILY=m2m100
 TRANSLATION_MODEL=models/m2m100-418m-ct2
 TRANSLATION_TOKENIZER=facebook/m2m100_418M
 ```
 
-If the CTranslate2 model is missing, the backend falls back to Transformers/PyTorch when available.
+**Licensing:** Meta NLLB checkpoints may impose non-commercial or research constraints. Review the model license on Hugging Face before commercial deployment.
+
+If the CTranslate2 model is missing, startup fails with an actionable path to the preparation script.
 
 ### Chrome extension
 
@@ -302,8 +319,11 @@ Important options from `backend/.env.example`. See that file for the full list.
 | Variable | Default | Description |
 | --- | ---: | --- |
 | `ASR_DEVICE` | `cpu` | `cpu`, `cuda`, or `auto` |
-| `ASR_MODEL` | `small` | Whisper model size (`medium` = higher accuracy, more latency) |
-| `ASR_COMPUTE_TYPE` | `int8` | `int8` on CPU; use `float16` on CUDA |
+| `ASR_MODEL` | `large-v3-turbo` | Whisper model (`small` for weak hardware) |
+| `ASR_COMPUTE_TYPE` | auto | `int8` on CPU; `float16` on CUDA when empty |
+| `ASR_VAD_FILTER` | `1` | Silero VAD inside faster-whisper for final paths |
+| `FINAL_ASR_WORD_TIMESTAMPS` | `1` | Word timestamps on final/balanced/quality ASR |
+| `PARTIAL_ASR_WORD_TIMESTAMPS` | `0` | Keep partial ASR text-only for latency |
 | `ASR_LANGUAGE` | `nl` | Warmup/default language; session selection is sent over WebSocket |
 | `FAST_ASR_BEAM_SIZE` | `1` | Beam width in **fast** mode |
 | `BALANCED_ASR_BEAM_SIZE` | `2` | Beam width in **balanced** mode |
@@ -317,9 +337,10 @@ Important options from `backend/.env.example`. See that file for the full list.
 | Variable | Default | Description |
 | --- | ---: | --- |
 | `TRANSLATION_ENGINE` | `auto` | `auto`, `ctranslate2`, or `transformers` |
-| `TRANSLATION_MODEL_FAMILY` | `m2m100` | Multilingual routing behavior (`auto`, `m2m100`, or `marian`) |
-| `TRANSLATION_MODEL` | `models/m2m100-418m-ct2` | CTranslate2 model directory |
-| `TRANSLATION_TOKENIZER` | `facebook/m2m100_418M` | Tokenizer name/path |
+| `TRANSLATION_MODEL_FAMILY` | `nllb` | `nllb`, `m2m100`, `marian`, or `auto` |
+| `TRANSLATION_MODEL` | `models/nllb-200-distilled-600m-ct2` | CTranslate2 model directory |
+| `TRANSLATION_TOKENIZER` | `facebook/nllb-200-distilled-600M` | Tokenizer name/path |
+| `EXPORT_ALIGNMENT_ENGINE` | `live` | Set to `whisperx` for optional HQ export |
 | `TRANSLATION_DEVICE` | `cpu` | Translation runtime device |
 | `TRANSLATION_COMPUTE_TYPE` | `int8` | CTranslate2 compute type |
 | `TRANSLATION_BEAM_SIZE` | `1` | Translation beam search width |

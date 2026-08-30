@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import time
@@ -26,8 +27,13 @@ def main() -> None:
     parser.add_argument("--mode", choices=["fast", "balanced", "quality"], default="fast")
     parser.add_argument("--segment-seconds", type=float, default=3.0)
     parser.add_argument("--max-segments", type=int, default=0, help="0 means all segments")
+    parser.add_argument("--asr-model", default=os.getenv("ASR_MODEL", "large-v3-turbo"))
+    parser.add_argument("--translation-family", default=os.getenv("TRANSLATION_MODEL_FAMILY", "nllb"))
     parser.add_argument("--json", action="store_true", help="print JSON only")
     args = parser.parse_args()
+
+    os.environ["ASR_MODEL"] = args.asr_model
+    os.environ["TRANSLATION_MODEL_FAMILY"] = args.translation_family
 
     sample_rate, audio = read_wav(args.wav)
     if sample_rate != 16000:
@@ -38,23 +44,36 @@ def main() -> None:
     if args.max_segments > 0:
         segments = segments[: args.max_segments]
 
+    init_started = time.perf_counter()
+    from app.asr import get_asr_engine
+    from app.translator import get_translation_engine
+
+    asr = get_asr_engine()
+    translator = get_translation_engine()
+    init_seconds = round(time.perf_counter() - init_started, 3)
+
     rows: list[dict[str, Any]] = []
+    offset = 0.0
     for index, segment in enumerate(segments, start=1):
         started = time.perf_counter()
-        sentences, meta = transcribe_and_collect_sentences(segment, config, assembler, force=True)
+        sentences, meta = transcribe_and_collect_sentences(segment, config, assembler, force=True, time_offset_seconds=offset)
         translation_started = time.perf_counter()
-        translations = translate_many_sentences(sentences) if sentences else []
+        translations = translate_many_sentences(sentences, config) if sentences else []
         mt_latency_ms = int((time.perf_counter() - translation_started) * 1000)
         total_ms = int((time.perf_counter() - started) * 1000)
+        audio_seconds = round(float(len(segment)) / sample_rate, 3)
+        offset += audio_seconds
         rows.append(
             {
                 "index": index,
-                "audio_seconds": round(float(len(segment)) / sample_rate, 3),
+                "audio_seconds": audio_seconds,
                 "asr_latency_ms": int(meta.get("asr_latency_ms") or 0),
                 "mt_latency_ms": mt_latency_ms,
                 "total_latency_ms": total_ms,
-                "realtime_factor": round((total_ms / 1000.0) / max(float(len(segment)) / sample_rate, 0.001), 3),
+                "realtime_factor": round((total_ms / 1000.0) / max(audio_seconds, 0.001), 3),
                 "sentence_count": len(sentences),
+                "cue_count": len(meta.get("cues") or []),
+                "word_count": meta.get("word_count", 0),
                 "translation_count": len(translations),
             }
         )
@@ -64,6 +83,10 @@ def main() -> None:
         "mode": args.mode,
         "sample_rate": sample_rate,
         "segments": len(rows),
+        "asr_model": asr.info().get("asr_model"),
+        "translation_model_family": translator.info().get("translation_model_family"),
+        "translation_model": translator.info().get("translation_model"),
+        "initialization_seconds": init_seconds,
         "summary": {
             "asr_latency_ms": summary([row["asr_latency_ms"] for row in rows]),
             "mt_latency_ms": summary([row["mt_latency_ms"] for row in rows]),
@@ -76,7 +99,10 @@ def main() -> None:
         print(json.dumps(result, indent=2))
     else:
         print(json.dumps(result["summary"], indent=2))
-        print(f"segments={len(rows)} mode={args.mode} wav={args.wav}")
+        print(
+            f"segments={len(rows)} mode={args.mode} asr={result['asr_model']} "
+            f"translation={result['translation_model_family']} wav={args.wav}"
+        )
 
 
 def read_wav(path: Path) -> tuple[int, np.ndarray]:

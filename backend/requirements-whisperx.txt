@@ -1,0 +1,3 @@
+# Optional WhisperX dependencies for high-quality export alignment.
+# Not required for live subtitles.
+whisperx>=3.1.0

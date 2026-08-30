@@ -20,11 +20,16 @@ from .languages import (
     validate_language,
 )
 from .logger import get_logger
+from .translation_backends import (
+    TransformersTranslationBackend,
+    create_ctranslate2_backend,
+    missing_model_message,
+)
 from .translation_cache import DurableTranslationCache
 
 logger = get_logger("translator")
 
-TRANSLATION_CACHE_SCHEMA_VERSION = 1
+TRANSLATION_CACHE_SCHEMA_VERSION = 2
 TRANSLATION_CACHE_SAMPLE_LIMIT = 1000
 
 
@@ -40,6 +45,7 @@ class TranslationCacheKey:
     translation_engine: str
     model_name: str
     tokenizer_name: str
+    model_family: str
     beam_size: int
     max_decoding_length: int
     glossary_version: str
@@ -149,6 +155,7 @@ class TranslationEngine:
         self.tokenizer: Any = None
         self.translator: Any = None
         self.model: Any = None
+        self.backend: Any = None
         self.cache: OrderedDict[TranslationCacheKey, str] = OrderedDict()
         self._cache_lock = RLock()
         self._model_lock = RLock()
@@ -204,18 +211,20 @@ class TranslationEngine:
 
     def _detect_model_family(self) -> str:
         configured = os.getenv("TRANSLATION_MODEL_FAMILY", "auto").strip().lower()
-        if configured not in {"auto", "m2m100", "marian"}:
-            raise ValueError("TRANSLATION_MODEL_FAMILY must be auto, m2m100, or marian")
+        if configured not in {"auto", "m2m100", "marian", "nllb"}:
+            raise ValueError("TRANSLATION_MODEL_FAMILY must be auto, m2m100, marian, or nllb")
         if configured != "auto":
             return configured
         identity = f"{self.model_name} {self.tokenizer_name}".lower()
+        if "nllb" in identity:
+            return "nllb"
         return "m2m100" if "m2m100" in identity else "marian"
 
     def validate_pair(self, source_language: str, target_language: str) -> tuple[str, str]:
         source = validate_language(source_language)
         target = validate_language(target_language)
         family = getattr(self, "model_family", "multilingual" if self.engine == "fake" else "marian")
-        if source == target or family in {"m2m100", "multilingual"}:
+        if source == target or family in {"m2m100", "nllb", "multilingual"}:
             return source, target
         fixed_source = getattr(self, "fixed_source_language", DEFAULT_SOURCE_LANGUAGE)
         fixed_target = getattr(self, "fixed_target_language", DEFAULT_TARGET_LANGUAGE)
@@ -230,7 +239,7 @@ class TranslationEngine:
         family = getattr(self, "model_family", "marian")
         result: dict[str, Any] = {
             "model_family": family,
-            "multilingual": family == "m2m100",
+            "multilingual": family in {"m2m100", "nllb"},
             "supported_languages": sorted(SUPPORTED_LANGUAGE_CODES),
         }
         if family == "marian":
@@ -243,7 +252,7 @@ class TranslationEngine:
 
         model_path = Path(self.model_name)
         if not model_path.exists():
-            raise FileNotFoundError(f"CTranslate2 model not found: {model_path}. Run scripts/prepare_translation_ct2.sh first.")
+            raise FileNotFoundError(missing_model_message(model_family=self.model_family, model_path=str(model_path)))
 
         logger.info(
             "translation_ctranslate2_loading model=%s tokenizer=%s device=%s compute_type=%s",
@@ -257,6 +266,13 @@ class TranslationEngine:
             local_files_only=_env_bool("LOCAL_MODELS_ONLY", True),
         )
         self.translator = ctranslate2.Translator(str(model_path), device=self.device, compute_type=self.compute_type)
+        self.backend = create_ctranslate2_backend(
+            model_family=self.model_family,
+            tokenizer=self.tokenizer,
+            translator=self.translator,
+            beam_size=self.beam_size,
+            max_decoding_length=self.max_decoding_length,
+        )
         self.model = None
 
     def _load_transformers(self) -> None:
@@ -278,6 +294,14 @@ class TranslationEngine:
         if self.device == "cuda":
             torch.backends.cuda.matmul.allow_tf32 = True
         self.translator = None
+        self.backend = TransformersTranslationBackend(
+            model_family=self.model_family,
+            tokenizer=self.tokenizer,
+            model=self.model,
+            device=self.device,
+            beam_size=self.beam_size,
+            max_decoding_length=self.max_decoding_length,
+        )
 
     def info(self) -> dict[str, Any]:
         cache_info = self.cache_info()
@@ -435,6 +459,7 @@ class TranslationEngine:
             translation_engine=self.engine,
             model_name=self.model_name,
             tokenizer_name=self.tokenizer_name,
+            model_family=self.model_family,
             beam_size=self.beam_size,
             max_decoding_length=self.max_decoding_length,
             glossary_version=self.glossary_version,
@@ -516,8 +541,15 @@ class TranslationEngine:
             )
             translation_started = time.perf_counter()
             try:
-                if self.engine == "ctranslate2":
-                    if getattr(self, "model_family", "") == "m2m100":
+                backend = getattr(self, "backend", None)
+                if backend is not None:
+                    translated = backend.translate_many(
+                        source_texts,
+                        source_language=source_language,
+                        target_language=target_language,
+                    )
+                elif self.engine == "ctranslate2":
+                    if getattr(self, "model_family", "") in {"m2m100", "nllb"}:
                         translated = self._translate_ctranslate2_many(
                             source_texts,
                             source_language=source_language,
@@ -526,7 +558,7 @@ class TranslationEngine:
                     else:
                         translated = self._translate_ctranslate2_many(source_texts)
                 else:
-                    if getattr(self, "model_family", "") == "m2m100":
+                    if getattr(self, "model_family", "") in {"m2m100", "nllb"}:
                         translated = self._translate_transformers_many(
                             source_texts,
                             source_language=source_language,

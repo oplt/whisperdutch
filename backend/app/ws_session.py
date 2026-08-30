@@ -96,6 +96,7 @@ class SubtitleWebSocketSession:
         self._last_realtime_factor = 0.0
         self._backpressure_until = 0.0
         self._partial_suppression_reasons: dict[str, int] = {}
+        self._session_audio_seconds = 0.0
 
     async def run(self) -> None:
         origin = self.websocket.headers.get("origin")
@@ -399,6 +400,7 @@ class SubtitleWebSocketSession:
         if job.audio is None:
             return
         queue_delay_ms = max(0, int((time.perf_counter() - job.created_at) * 1000))
+        chunk_offset = self._session_audio_seconds
         try:
             sentences, meta = await asyncio.to_thread(
                 transcribe_and_collect_sentences,
@@ -406,6 +408,7 @@ class SubtitleWebSocketSession:
                 job.config,
                 self.sentence_assembler,
                 job.force,
+                time_offset_seconds=chunk_offset,
             )
         except Exception as exc:
             logger.exception("final_asr_failure client_id=%s", self.client_id)
@@ -416,6 +419,7 @@ class SubtitleWebSocketSession:
         await self._maybe_degrade_mode(job.config, float(meta.get("realtime_factor") or 0.0))
         self.metrics.asr_latency_ms.append(int(meta.get("asr_latency_ms") or 0))
         audio_seconds = float(meta.get("audio_seconds") or 0.0)
+        self._session_audio_seconds += audio_seconds
         self.metrics.audio_seconds.append(audio_seconds)
         self.metrics.audio_seconds_total += audio_seconds
         self.metrics.realtime_factors.append(float(meta.get("realtime_factor") or 0.0))
@@ -463,30 +467,45 @@ class SubtitleWebSocketSession:
         audio_seconds = float(meta.get("audio_seconds") or 0.0)
         fragment = str(meta.get("fragment") or "")
         quality = meta.get("quality") or {}
-        for sentence in sentences:
+        cues = meta.get("cues") or []
+        for index, sentence in enumerate(sentences):
             if not sentence:
                 continue
+            cue = cues[index] if index < len(cues) else {}
             subtitle_id = f"final-{time.time_ns()}"
-            subtitle_items.append({"id": subtitle_id, "sentence": sentence, "quality": quality})
-            await self._send_json(
-                {
-                    "type": "final_pending",
-                    "id": subtitle_id,
-                    "source_lang": config.source_lang,
-                    "target_lang": config.target_lang,
-                    "mode": config.mode,
-                    "dutch": sentence,
-                    "source_text": sentence,
-                    "translation": "Translating...",
-                    "asr_latency_ms": asr_latency_ms,
-                    "queue_delay_ms": queue_delay_ms,
-                    "latency_ms": queue_delay_ms + asr_latency_ms,
-                    "audio_seconds": audio_seconds,
-                    "asr_fragment": fragment,
-                    "sentence_mode": True,
-                    "quality": quality,
-                }
-            )
+            item = {
+                "id": subtitle_id,
+                "sentence": sentence,
+                "quality": quality,
+                "start": cue.get("start"),
+                "end": cue.get("end"),
+                "words": cue.get("words") or [],
+            }
+            subtitle_items.append(item)
+            pending_payload = {
+                "type": "final_pending",
+                "id": subtitle_id,
+                "source_lang": config.source_lang,
+                "target_lang": config.target_lang,
+                "mode": config.mode,
+                "dutch": sentence,
+                "source_text": sentence,
+                "translation": "Translating...",
+                "asr_latency_ms": asr_latency_ms,
+                "queue_delay_ms": queue_delay_ms,
+                "latency_ms": queue_delay_ms + asr_latency_ms,
+                "audio_seconds": audio_seconds,
+                "asr_fragment": fragment,
+                "sentence_mode": True,
+                "quality": quality,
+            }
+            if cue.get("start") is not None:
+                pending_payload["start"] = cue.get("start")
+            if cue.get("end") is not None:
+                pending_payload["end"] = cue.get("end")
+            if cue.get("words"):
+                pending_payload["words"] = cue.get("words")
+            await self._send_json(pending_payload)
             logger.debug(
                 "subtitle_pending id=%s asr_latency_ms=%s audio_seconds=%.2f dutch=%s",
                 subtitle_id,
@@ -566,6 +585,12 @@ class SubtitleWebSocketSession:
                 "quality": item.get("quality")
                 or ({"level": "good"} if translation else {"level": "watch", "reasons": ["translation_unavailable"]}),
             }
+            if item.get("start") is not None:
+                payload["start"] = item.get("start")
+            if item.get("end") is not None:
+                payload["end"] = item.get("end")
+            if item.get("words"):
+                payload["words"] = item.get("words")
             await self._send_json(payload)
             logger.debug(
                 "subtitle_final id=%s translation_latency_ms=%s total_latency_ms=%s translation=%s",

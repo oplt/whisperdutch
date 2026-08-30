@@ -31,19 +31,22 @@
 
     finalize(payload, startMs) {
       let item = payload.id ? this.byId.get(payload.id) : null;
+      const payloadStartMs = typeof payload.start === "number" ? Math.round(payload.start * 1000) : null;
+      const payloadEndMs = typeof payload.end === "number" ? Math.round(payload.end * 1000) : null;
       if (!item) {
         this.closePrevious(startMs);
         item = {
           id: payload.id || `local-${Date.now()}`,
-          startMs,
-          endMs: startMs + 3500,
+          startMs: payloadStartMs ?? startMs,
+          endMs: payloadEndMs ?? (startMs + 3500),
           dutch: "",
           translation: "",
           sourceLang: payload.source_lang || "nl",
           targetLang: payload.target_lang || "en",
           pending: false,
           mode: payload.mode || "balanced",
-          quality: null
+          quality: null,
+          words: Array.isArray(payload.words) ? payload.words : []
         };
         this.items.push(item);
         this.byId.set(item.id, item);
@@ -55,6 +58,9 @@
       item.pending = false;
       item.mode = payload.mode || item.mode;
       item.quality = payload.quality || item.quality;
+      if (payloadStartMs !== null) item.startMs = payloadStartMs;
+      if (payloadEndMs !== null) item.endMs = payloadEndMs;
+      if (Array.isArray(payload.words) && payload.words.length) item.words = payload.words;
       return item;
     }
 

@@ -38,6 +38,32 @@ DEFAULT_SOURCE_LANGUAGE = "nl"
 DEFAULT_TARGET_LANGUAGE = "en"
 SUPPORTED_LANGUAGE_CODES = frozenset(language.code for language in LANGUAGES)
 
+# FLORES-200 codes used by facebook/nllb-200-distilled-600M.
+NLLB_LANGUAGE_CODES: dict[str, str] = {
+    "nl": "nld_Latn",
+    "en": "eng_Latn",
+    "de": "deu_Latn",
+    "fr": "fra_Latn",
+    "es": "spa_Latn",
+    "it": "ita_Latn",
+    "pt": "por_Latn",
+    "pl": "pol_Latn",
+    "tr": "tur_Latn",
+    "ru": "rus_Cyrl",
+    "uk": "ukr_Cyrl",
+    "ar": "arb_Arab",
+    "hi": "hin_Deva",
+    "zh": "zho_Hans",
+    "ja": "jpn_Jpan",
+    "ko": "kor_Hang",
+    "sv": "swe_Latn",
+    "da": "dan_Latn",
+    "no": "nob_Latn",
+    "fi": "fin_Latn",
+}
+
+M2M100_LANGUAGE_CODES = dict.fromkeys(SUPPORTED_LANGUAGE_CODES, True)
+
 
 class UnsupportedLanguagePairError(ValueError):
     pass

@@ -1,9 +1,12 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-numpy>=1.26.0
-pydantic>=2.7.0
-faster-whisper>=1.1.0
-ctranslate2>=4.6.0
-transformers>=4.44.0,<5
-sentencepiece>=0.2.0
-sacremoses>=0.1.1
+# Runtime dependencies for the live subtitle backend.
+# For development (tests, lint, types): pip install -r requirements-dev.txt
+# For optional WhisperX export: pip install -r requirements-whisperx.txt
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+numpy==2.4.5
+pydantic==2.13.4
+faster-whisper==1.2.1
+ctranslate2==4.7.1
+transformers==4.57.6
+sentencepiece==0.2.1
+sacremoses==0.1.1

@@ -321,3 +321,51 @@ def test_final_subtitle_is_sent_before_history_persistence(monkeypatch) -> None:
         assert events == ["send", "persist"]
 
     asyncio.run(run())
+
+
+def test_final_payload_includes_optional_timestamps(monkeypatch) -> None:
+    async def run() -> None:
+        session = object.__new__(SubtitleWebSocketSession)
+        session.client_id = "timestamp-test"
+        session.metrics = SessionMetrics(client_id=session.client_id)
+        payloads: list[dict] = []
+
+        async def send(payload: dict) -> None:
+            payloads.append(payload)
+
+        session._send_json = send
+        session._persist_subtitle = lambda _payload: asyncio.sleep(0)
+        monkeypatch.setattr("app.ws_session.translate_many_sentences", lambda _sentences, _config: ["Hello"])
+
+        async def run_inline(function, *args):
+            return function(*args)
+
+        monkeypatch.setattr(asyncio, "to_thread", run_inline)
+
+        await session._translate_and_send(
+            [
+                {
+                    "id": "final-1",
+                    "sentence": "Hallo",
+                    "quality": {"level": "good"},
+                    "start": 12.34,
+                    "end": 15.92,
+                    "words": [{"text": "Hallo", "start": 12.34, "end": 12.78, "probability": 0.97}],
+                }
+            ],
+            ClientConfig(),
+            asr_latency_ms=100,
+            queue_delay_ms=10,
+            audio_seconds=1.0,
+            fragment="Hallo",
+        )
+
+        final = payloads[0]
+        assert final["type"] == "final"
+        assert final["dutch"] == "Hallo"
+        assert final["translation"] == "Hello"
+        assert final["start"] == 12.34
+        assert final["end"] == 15.92
+        assert final["words"][0]["text"] == "Hallo"
+
+    asyncio.run(run())
