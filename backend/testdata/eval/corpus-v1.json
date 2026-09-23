@@ -1,0 +1,108 @@
+{
+  "name": "dutch-subtitle-eval-v1",
+  "version": "1",
+  "created": "2026-09-23",
+  "purpose": "Bounded local comparison of ASR/MT profiles for live Dutch subtitles. Synthetic TTS is for path/relative ranking only — not human-speech WER claims.",
+  "host_constraints": {
+    "device": "cpu",
+    "note": "CT2 CUDA devices=0 on inventory host; GPU profiles remain provisional."
+  },
+  "splits": {
+    "tuning": ["nl-clean-01", "nl-numbers-01", "nl-names-01"],
+    "heldout": ["nl-negation-01", "nl-codeswitch-01", "nl-incomplete-01", "nl-flemish-lexicon-01"]
+  },
+  "items": [
+    {
+      "id": "nl-clean-01",
+      "split": "tuning",
+      "tags": ["clean", "netherlands_dutch"],
+      "voice": "nl",
+      "rate": 140,
+      "reference_source": "Goedemorgen, dit is een korte Nederlandse testzin.",
+      "reference_translation_en": "Good morning, this is a short Dutch test sentence."
+    },
+    {
+      "id": "nl-numbers-01",
+      "split": "tuning",
+      "tags": ["numbers", "dates"],
+      "voice": "nl",
+      "rate": 135,
+      "reference_source": "Op twaalf maart om half drie vertrekt de trein vanaf spoor vier.",
+      "reference_translation_en": "On March twelfth at half past two the train leaves from platform four."
+    },
+    {
+      "id": "nl-names-01",
+      "split": "tuning",
+      "tags": ["names"],
+      "voice": "nl",
+      "rate": 140,
+      "reference_source": "Mevrouw De Vries belt met dokter Jansen in Rotterdam.",
+      "reference_translation_en": "Mrs. De Vries is calling Doctor Jansen in Rotterdam."
+    },
+    {
+      "id": "nl-negation-01",
+      "split": "heldout",
+      "tags": ["negation"],
+      "voice": "nl",
+      "rate": 140,
+      "reference_source": "Ik wil geen suiker in mijn thee, alstublieft.",
+      "reference_translation_en": "I do not want sugar in my tea, please."
+    },
+    {
+      "id": "nl-codeswitch-01",
+      "split": "heldout",
+      "tags": ["code_switching"],
+      "voice": "nl",
+      "rate": 140,
+      "reference_source": "Kun je even de meeting openen in Zoom?",
+      "reference_translation_en": "Can you open the meeting in Zoom for a moment?"
+    },
+    {
+      "id": "nl-incomplete-01",
+      "split": "heldout",
+      "tags": ["incomplete"],
+      "voice": "nl",
+      "rate": 145,
+      "reference_source": "Als het regent morgen, dan",
+      "reference_translation_en": "If it rains tomorrow, then"
+    },
+    {
+      "id": "nl-flemish-lexicon-01",
+      "split": "heldout",
+      "tags": ["flemish_lexicon", "synthetic_voice_nl"],
+      "voice": "nl",
+      "rate": 140,
+      "reference_source": "Ik ga straks nog snel naar de bakker voor pistolets.",
+      "reference_translation_en": "I am quickly going to the bakery later for pistolets.",
+      "quality_note": "Flemish lexicon with Netherlands Dutch TTS voice — dialect coverage is provisional."
+    }
+  ],
+  "reference_mt_pairs": [
+    {
+      "id": "mt-ref-01",
+      "source_nl": "De trein naar Amsterdam vertrekt over vijf minuten.",
+      "reference_en": "The train to Amsterdam leaves in five minutes."
+    },
+    {
+      "id": "mt-ref-02",
+      "source_nl": "Ik wil graag een kopje koffie met melk, alstublieft.",
+      "reference_en": "I would like a cup of coffee with milk, please."
+    },
+    {
+      "id": "mt-ref-03",
+      "source_nl": "Er is geen wifi in de bibliotheek vandaag.",
+      "reference_en": "There is no wifi in the library today."
+    },
+    {
+      "id": "mt-ref-04",
+      "source_nl": "Bel mijn collega voor vrijdag om drie uur.",
+      "reference_en": "Call my colleague for Friday at three o'clock."
+    }
+  ],
+  "unmeasured_conditions": [
+    "Real human Netherlands Dutch and Flemish speech",
+    "Noisy / music / quiet speech capture",
+    "Browser resampling and WebSocket transport",
+    "Parakeet / TranslateGemma adapters (not integrated)"
+  ]
+}

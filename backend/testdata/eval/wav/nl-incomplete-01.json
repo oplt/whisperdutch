@@ -1,0 +1,15 @@
+{
+  "id": "nl-incomplete-01",
+  "path": "/home/polat/Desktop/Projects/dutch-subtitle-translator/backend/testdata/eval/wav/nl-incomplete-01.wav",
+  "sample_rate": 16000,
+  "duration_seconds": 2.542,
+  "generator": "espeak",
+  "voice": "nl",
+  "reference_source": "Als het regent morgen, dan",
+  "reference_translation_en": "If it rains tomorrow, then",
+  "split": "heldout",
+  "tags": [
+    "incomplete"
+  ],
+  "quality_note": "Synthetic TTS \u2014 relative ranking only, not human-speech WER."
+}

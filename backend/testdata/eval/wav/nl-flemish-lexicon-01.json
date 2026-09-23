@@ -1,0 +1,16 @@
+{
+  "id": "nl-flemish-lexicon-01",
+  "path": "/home/polat/Desktop/Projects/dutch-subtitle-translator/backend/testdata/eval/wav/nl-flemish-lexicon-01.wav",
+  "sample_rate": 16000,
+  "duration_seconds": 4.064,
+  "generator": "espeak",
+  "voice": "nl",
+  "reference_source": "Ik ga straks nog snel naar de bakker voor pistolets.",
+  "reference_translation_en": "I am quickly going to the bakery later for pistolets.",
+  "split": "heldout",
+  "tags": [
+    "flemish_lexicon",
+    "synthetic_voice_nl"
+  ],
+  "quality_note": "Flemish lexicon with Netherlands Dutch TTS voice \u2014 dialect coverage is provisional."
+}

@@ -17,6 +17,7 @@ from .errors import map_exception
 from .history import session_history_store
 from .inference_runtime import get_inference_runtime
 from .logger import get_logger, setup_logging
+from .settings import get_settings, reset_settings_cache
 from .startup_status import write_startup_status
 from .translator import get_translation_engine
 
@@ -160,8 +161,12 @@ def _warmup_models_parallel(generation: int) -> None:
     _write_phase(generation, "warming_models")
     warm_started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="startup-warm") as pool:
-        pool.submit(_warmup_engine, asr).result()
-        pool.submit(_warmup_engine, translator).result()
+        warmup_futures = (
+            pool.submit(_warmup_engine, asr),
+            pool.submit(_warmup_engine, translator),
+        )
+        for future in warmup_futures:
+            future.result()
     if generation != runtime_state.generation:
         return
     _record_phase_ms(generation, "warming_models_parallel", warm_started)
@@ -242,9 +247,18 @@ async def supervise_warmup(app: FastAPI, generation: int) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
+    reset_settings_cache()
+    settings = get_settings()
+    app.state.settings = settings
     generation = runtime_state.begin_startup()
     write_startup_status("starting", False)
-    logger.info("application_startup generation=%s", generation)
+    logger.info(
+        "application_startup generation=%s asr_model=%s translation_engine=%s warmup=%s",
+        generation,
+        settings.asr_model,
+        settings.translation_engine,
+        settings.startup_warmup_strategy,
+    )
     inference = get_inference_runtime()
     await inference.start()
     app.state.inference_runtime = inference
@@ -265,4 +279,5 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await warmup_task
         except asyncio.CancelledError:
             pass
+        reset_settings_cache()
         logger.info("application_shutdown generation=%s", generation)

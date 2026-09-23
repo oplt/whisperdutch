@@ -152,15 +152,8 @@ class TranslationEngine:
         self.model: Any = None
         self.backend: Any = None
         self.language_metadata: TranslationLanguageMetadata | None = None
-        self.config_fingerprint = build_config_fingerprint(
-            translation_engine=self.engine,
-            model_name=self.model_name,
-            tokenizer_name=self.tokenizer_name,
-            model_family=self.model_family,
-            beam_size=self.beam_size,
-            max_decoding_length=self.max_decoding_length,
-        )
-        self.cache: OrderedDict[str, str] = OrderedDict()
+        self.config_fingerprint = ""
+        self.cache: OrderedDict[str, tuple[str, float | None]] = OrderedDict()
         self._cache_lock = RLock()
         self._tokenizer_lock = RLock()
         self._model_lock = RLock()
@@ -212,6 +205,16 @@ class TranslationEngine:
             self._load_transformers()
         else:
             raise ValueError("TRANSLATION_ENGINE must be auto, ctranslate2, or transformers")
+
+        # Fingerprint uses the effective engine + loaded artifact identity (after auto resolve).
+        self.config_fingerprint = build_config_fingerprint(
+            translation_engine=self.engine,
+            model_name=self.model_name,
+            tokenizer_name=self.tokenizer_name,
+            model_family=self.model_family,
+            beam_size=self.beam_size,
+            max_decoding_length=self.max_decoding_length,
+        )
 
         logger.info("translation_model_ready info=%s", self.info())
 
@@ -275,7 +278,21 @@ class TranslationEngine:
             self.tokenizer_name,
             local_files_only=_env_bool("LOCAL_MODELS_ONLY", True),
         )
-        self.translator = ctranslate2.Translator(str(model_path), device=self.device, compute_type=self.compute_type)
+        self.inter_threads = max(1, int(os.getenv("TRANSLATION_INTER_THREADS", "1")))
+        # Intra-op threads for one decode; keep modest so ASR + MT do not oversubscribe.
+        default_intra = max(1, min(4, (os.cpu_count() or 4) // 4))
+        raw_intra = os.getenv("TRANSLATION_INTRA_THREADS", "").strip()
+        try:
+            self.intra_threads = max(1, int(raw_intra)) if raw_intra else default_intra
+        except ValueError:
+            self.intra_threads = default_intra
+        self.translator = ctranslate2.Translator(
+            str(model_path),
+            device=self.device,
+            compute_type=self.compute_type,
+            inter_threads=self.inter_threads,
+            intra_threads=self.intra_threads,
+        )
         if self.model_family in {"nllb", "m2m100"}:
             self.language_metadata = TranslationLanguageMetadata(tokenizer=self.tokenizer, model_family=self.model_family)
         self.backend = create_ctranslate2_backend(
@@ -333,6 +350,8 @@ class TranslationEngine:
             "translation_device": self.device,
             "translation_compute_type": self.compute_type,
             "translation_beam_size": self.beam_size,
+            "translation_inter_threads": getattr(self, "inter_threads", None),
+            "translation_intra_threads": getattr(self, "intra_threads", None),
             "translation_cache_items": cache_info["size"],
             "translation_cache": cache_info,
             "translation_capabilities": self.capabilities(),
@@ -692,13 +711,17 @@ class TranslationEngine:
             return None
         cache_id = _cache_key_id(key)
         cached = self.cache.get(cache_id)
-        if cached is not None:
-            self.cache.move_to_end(cache_id)
-            self._cache_hits += 1
-            logger.debug("translation_cache_hit chars=%s", len(key.source_text))
-            return cached
-
-        return None
+        if cached is None:
+            return None
+        translated, expires_at = cached
+        if expires_at is not None and time.time() >= expires_at:
+            del self.cache[cache_id]
+            self._cache_evictions += 1
+            return None
+        self.cache.move_to_end(cache_id)
+        self._cache_hits += 1
+        logger.debug("translation_cache_hit chars=%s", len(key.source_text))
+        return translated
 
     def _resolve_durable_owners(
         self,
@@ -748,7 +771,9 @@ class TranslationEngine:
                 self._durable_hits += 1
                 self._record_cache_lookup_locked(True, per_owner_latency_ms)
                 if self._cache_generation == inflight.generation:
-                    self._cache_set_locked(key, durable, persist=False)
+                    # Preserve TTL window consistent with refreshed durable access.
+                    expires_at = time.time() + self.cache_ttl_seconds if self.cache_ttl_seconds > 0 else None
+                    self._cache_set_locked(key, durable, persist=False, expires_at=expires_at)
                 results[index] = durable
                 if not inflight.future.done():
                     inflight.future.set_result(durable)
@@ -761,11 +786,20 @@ class TranslationEngine:
         with self._cache_lock:
             self._cache_set_locked(key, translated)
 
-    def _cache_set_locked(self, key: TranslationCacheKey, translated: str, *, persist: bool = True) -> None:
+    def _cache_set_locked(
+        self,
+        key: TranslationCacheKey,
+        translated: str,
+        *,
+        persist: bool = True,
+        expires_at: float | None = None,
+    ) -> None:
         if self.max_cache_items <= 0:
             return
         cache_id = _cache_key_id(key)
-        self.cache[cache_id] = translated
+        if expires_at is None and self.cache_ttl_seconds > 0:
+            expires_at = time.time() + self.cache_ttl_seconds
+        self.cache[cache_id] = (translated, expires_at)
         self.cache.move_to_end(cache_id)
         self._cache_sets += 1
         while len(self.cache) > self.max_cache_items:

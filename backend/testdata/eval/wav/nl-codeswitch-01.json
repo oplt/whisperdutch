@@ -1,0 +1,15 @@
+{
+  "id": "nl-codeswitch-01",
+  "path": "/home/polat/Desktop/Projects/dutch-subtitle-translator/backend/testdata/eval/wav/nl-codeswitch-01.wav",
+  "sample_rate": 16000,
+  "duration_seconds": 3.182,
+  "generator": "espeak",
+  "voice": "nl",
+  "reference_source": "Kun je even de meeting openen in Zoom?",
+  "reference_translation_en": "Can you open the meeting in Zoom for a moment?",
+  "split": "heldout",
+  "tags": [
+    "code_switching"
+  ],
+  "quality_note": "Synthetic TTS \u2014 relative ranking only, not human-speech WER."
+}

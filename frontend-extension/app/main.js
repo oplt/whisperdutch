@@ -48,6 +48,18 @@
         },
         onAudioRestored: () => {
           if (this.state.value === "capturing") this.view.setStatus("Listening");
+        },
+        onTrackEnded: () => {
+          if (!["capturing", "paused", "reconnecting"].includes(this.state.value)) return;
+          void this.fail(this.state.generation, new Error(
+            this.capture.sourceType === "tab"
+              ? "Tab audio ended. Restart capture from the video tab."
+              : "System audio ended. Check the monitor source and click Retry."
+          ));
+        },
+        onProcessorError: ({ message } = {}) => {
+          if (!["capturing", "paused", "reconnecting"].includes(this.state.value)) return;
+          void this.fail(this.state.generation, new Error(message || "Audio processing failed."));
         }
       });
       this.startedAt = null;
@@ -148,7 +160,11 @@
           return;
         }
         await this.loadTranslationCapabilities();
-        this.sendConfig();
+        const acked = await this.sendConfig({ awaitAck: true, timeoutMs: 5000 });
+        if (!this.state.owns(generation)) return;
+        if (!acked) {
+          throw new Error("Backend did not acknowledge session configuration.");
+        }
         this.startedAt = Date.now();
         this.state.transition("capturing", "Listening");
         this.logger.log("info", "capture_started", { mode: this.settings.values().mode });
@@ -186,6 +202,7 @@
 
     async handleDisconnect() {
       if (!["capturing", "paused"].includes(this.state.value)) return;
+      const wasPaused = this.state.value === "paused";
       const generation = this.state.begin("reconnecting", "Reconnecting automatically");
       this.capture.setPaused(true);
       try {
@@ -194,9 +211,18 @@
           return connection?.wsUrl || root.BackendClient.getWsUrl();
         });
         if (!this.state.owns(generation)) return;
-        this.capture.setPaused(false);
-        this.sendConfig();
-        this.state.transition("capturing", "Listening");
+        const acked = await this.sendConfig({ awaitAck: true, timeoutMs: 5000 });
+        if (!this.state.owns(generation)) return;
+        if (!acked) {
+          throw new Error("Backend did not acknowledge session configuration after reconnect.");
+        }
+        if (wasPaused) {
+          this.capture.setPaused(true);
+          this.state.transition("paused", "Paused");
+        } else {
+          this.capture.setPaused(false);
+          this.state.transition("capturing", "Listening");
+        }
       } catch (error) {
         await this.fail(generation, error);
       }
@@ -216,16 +242,20 @@
       this.logger.log("error", "capture_failed", { error: message });
     }
 
-    sendConfig() {
+    sendConfig(options = {}) {
       const values = this.settings.values();
-      this.socket.send({
+      const payload = {
         type: "config",
         sample_rate: App.TARGET_SAMPLE_RATE,
         source_lang: values.sourceLang,
         target_lang: values.targetLang,
         mode: values.mode,
         context_prompt: values.contextPrompt
-      });
+      };
+      if (options.awaitAck) {
+        return this.socket.sendConfig(payload, options);
+      }
+      return this.socket.send(payload);
     }
 
     handleMessage(payload) {

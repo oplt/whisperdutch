@@ -1,4 +1,4 @@
-.PHONY: local-dev install-backend prepare-models build-firefox check
+.PHONY: local-dev install-backend prepare-models build-firefox check inventory baseline-representative evaluate-models
 
 PROCFILE ?= Procfile
 
@@ -25,3 +25,15 @@ build-firefox:
 
 check:
 	bash scripts/check.sh
+
+# Model-free host/config inventory (safe for CI / make check companion).
+inventory:
+	cd backend && . .venv/bin/activate && python scripts/inventory_runtime.py
+
+# Explicit real-model speech baseline (downloads/weights required; not in check).
+baseline-representative:
+	cd backend && . .venv/bin/activate && set -a && [ -f .env ] && . ./.env; set +a && python scripts/benchmark_representative.py
+
+# Explicit model quality comparison (loads weights; not in check).
+evaluate-models:
+	cd backend && . .venv/bin/activate && set -a && [ -f .env ] && . ./.env; set +a && python scripts/evaluate_models.py

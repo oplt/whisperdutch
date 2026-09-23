@@ -15,6 +15,15 @@ def allowed_origins() -> list[str]:
     extension_id = os.getenv("EXTENSION_ID", os.getenv("DUTCH_SUBTITLE_EXTENSION_ID", "")).strip()
     if extension_id:
         origins.append(f"chrome-extension://{extension_id}")
+
+    # Firefox assigns a per-install moz-extension:// UUID. Register full origins
+    # explicitly (comma-separated); never wildcards.
+    firefox_origins = os.getenv("DUTCH_SUBTITLE_FIREFOX_ORIGINS", "").strip()
+    for origin in firefox_origins.split(","):
+        cleaned = origin.strip()
+        if cleaned.startswith("moz-extension://"):
+            origins.append(cleaned)
+
     return origins
 
 

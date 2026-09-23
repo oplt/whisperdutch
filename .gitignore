@@ -330,6 +330,9 @@ pyrightconfig.json
 /backend/translation_models/
 /backend/logs
 /backend/backend.log
+/logs/
+*.sqlite3
+!backend/testdata/**/*.sqlite3
 
 # Hugging Face / Torch caches if stored inside project
 .cache/

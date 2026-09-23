@@ -19,6 +19,7 @@ from .metrics import session_metrics_store
 from .model_runtime import lifespan, runtime_state
 from .schemas import ClientLog, GlossaryUpdate, PrivacyUpdate
 from .security import allowed_origins
+from .settings import get_settings
 from .startup_status import read_startup_status
 from .text_processor import list_glossary_rules, save_glossary_rules
 from .translator import get_translation_engine
@@ -96,6 +97,11 @@ def register_routes(app: FastAPI) -> None:
             "startup_timing": runtime_state.startup_timing_snapshot(),
         }
 
+    @app.get("/debug/config")
+    def debug_config() -> dict[str, Any]:
+        settings = getattr(app.state, "settings", None) or get_settings()
+        return {"ok": True, "settings": settings.public_dict()}
+
     @app.get("/debug/device")
     def debug_device() -> dict[str, Any]:
         asr_info: dict[str, Any] | None = None
@@ -111,6 +117,7 @@ def register_routes(app: FastAPI) -> None:
             except Exception as exc:
                 runtime_state.last_error = map_exception(exc).payload(debug_enabled=True)
                 logger.exception("debug_device_translation_failed")
+        settings = getattr(app.state, "settings", None) or get_settings()
         return {
             "readiness": {
                 "ready": runtime_state.ready,
@@ -121,6 +128,7 @@ def register_routes(app: FastAPI) -> None:
                 "startup_timing": runtime_state.startup_timing_snapshot(),
                 "startup_status": read_startup_status(),
             },
+            "settings": settings.public_dict(),
             "asr": asr_info,
             "translation": translation_info,
             "pipeline": {

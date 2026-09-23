@@ -15,6 +15,8 @@
       this.onBackpressure = options.onBackpressure || (() => {});
       this.onSilence = options.onSilence || (() => {});
       this.onAudioRestored = options.onAudioRestored || (() => {});
+      this.onTrackEnded = options.onTrackEnded || (() => {});
+      this.onProcessorError = options.onProcessorError || (() => {});
       this.setTimeout = options.setTimeout || root.setTimeout.bind(root);
       this.clearTimeout = options.clearTimeout || root.clearTimeout.bind(root);
       this.now = options.now || (() => Date.now());
@@ -58,6 +60,7 @@
         return false;
       }
       this.stream = stream;
+      this._bindTrackEndedHandlers(stream, generation);
       const context = new this.AudioContextImpl({ latencyHint: "interactive" });
       this.context = context;
       await context.audioWorklet.addModule("audio/worklet.js");
@@ -91,7 +94,12 @@
         this.monitor.connect(context.destination);
       }
       this.worklet.port.onmessage = event => this.handleAudio(event);
+      this.worklet.onprocessorerror = event => this._handleProcessorError(generation, event);
       if (context.state === "suspended") await context.resume();
+      if (generation !== this.generation) {
+        await this.close();
+        return false;
+      }
       if (context.state !== "running") {
         throw new Error("The browser blocked audio processing. Click Retry, then allow audio capture.");
       }
@@ -99,6 +107,28 @@
       this.paused = false;
       this.watchForSilence();
       return true;
+    }
+
+    _bindTrackEndedHandlers(stream, generation) {
+      const tracks = typeof stream.getTracks === "function" ? stream.getTracks() : [];
+      tracks.forEach(track => {
+        track.onended = () => {
+          if (generation !== this.generation || !this.acceptingAudio) return;
+          this.logger?.log("warn", "capture_track_ended", {
+            kind: track.kind,
+            readyState: track.readyState,
+            sourceType: this.sourceType
+          });
+          this.onTrackEnded({ kind: track.kind, readyState: track.readyState });
+        };
+      });
+    }
+
+    _handleProcessorError(generation, event) {
+      if (generation !== this.generation || !this.acceptingAudio) return;
+      const message = event?.message || event?.error?.message || "AudioWorklet processor failed.";
+      this.logger?.log("error", "capture_processor_error", { error: message });
+      this.onProcessorError({ message });
     }
 
     async captureTabAudio(tabId) {
@@ -327,7 +357,10 @@
       this.context = null;
       this.stream = null;
       this.onLevel(0);
+      // Flush any partially filled capture buffer before tearing down the graph.
+      this.safe(() => worklet?.port.postMessage({ type: "flush" }));
       this.safe(() => { if (worklet) worklet.port.onmessage = null; });
+      this.safe(() => { if (worklet) worklet.onprocessorerror = null; });
       this.safe(() => worklet?.disconnect());
       this.safe(() => source?.disconnect());
       this.safe(() => monitor?.disconnect());
@@ -339,7 +372,12 @@
           });
         });
       }
-      this.safe(() => stream?.getTracks().forEach(track => track.stop()));
+      this.safe(() => {
+        stream?.getTracks().forEach(track => {
+          track.onended = null;
+          track.stop();
+        });
+      });
     }
 
     safe(action) {

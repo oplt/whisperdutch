@@ -1,0 +1,15 @@
+{
+  "id": "nl-negation-01",
+  "path": "/home/polat/Desktop/Projects/dutch-subtitle-translator/backend/testdata/eval/wav/nl-negation-01.wav",
+  "sample_rate": 16000,
+  "duration_seconds": 3.561,
+  "generator": "espeak",
+  "voice": "nl",
+  "reference_source": "Ik wil geen suiker in mijn thee, alstublieft.",
+  "reference_translation_en": "I do not want sugar in my tea, please.",
+  "split": "heldout",
+  "tags": [
+    "negation"
+  ],
+  "quality_note": "Synthetic TTS \u2014 relative ranking only, not human-speech WER."
+}

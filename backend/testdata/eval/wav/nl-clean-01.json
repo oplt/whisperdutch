@@ -1,0 +1,16 @@
+{
+  "id": "nl-clean-01",
+  "path": "/home/polat/Desktop/Projects/dutch-subtitle-translator/backend/testdata/eval/wav/nl-clean-01.wav",
+  "sample_rate": 16000,
+  "duration_seconds": 3.959,
+  "generator": "espeak",
+  "voice": "nl",
+  "reference_source": "Goedemorgen, dit is een korte Nederlandse testzin.",
+  "reference_translation_en": "Good morning, this is a short Dutch test sentence.",
+  "split": "tuning",
+  "tags": [
+    "clean",
+    "netherlands_dutch"
+  ],
+  "quality_note": "Synthetic TTS \u2014 relative ranking only, not human-speech WER."
+}

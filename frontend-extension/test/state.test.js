@@ -42,6 +42,17 @@ test("error state can retry into starting-backend", () => {
   assert.equal(state.owns(generation), true);
 });
 
+test("AppState allows reconnecting back to paused", () => {
+  const state = new AppState();
+  state.begin("starting-backend", "Starting");
+  state.transition("connecting", "Connecting");
+  state.transition("capturing", "Listening");
+  state.transition("paused", "Paused");
+  state.begin("reconnecting", "Reconnecting");
+  state.transition("paused", "Paused");
+  assert.equal(state.value, "paused");
+});
+
 test("every state declares at least one outgoing transition", () => {
   Object.keys(TRANSITIONS).forEach(name => {
     assert.ok(TRANSITIONS[name].length >= 1, `${name} has no outgoing transitions`);

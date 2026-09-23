@@ -74,3 +74,37 @@ def test_single_waiting_translation_is_not_delayed_for_collection(monkeypatch) -
         await runtime.stop()
 
     asyncio.run(run())
+
+
+@pytest.mark.usefixtures("reset_inference_runtime")
+def test_translation_batch_respects_max_requests(monkeypatch) -> None:
+    async def run() -> None:
+        runtime = get_inference_runtime()
+        runtime.translation_max_concurrent = 1
+        runtime.set_inline(False)
+        monkeypatch.setenv("TRANSLATION_BATCH_COLLECT_MS", "5")
+        monkeypatch.setenv("TRANSLATION_BATCH_MAX_REQUESTS", "2")
+        monkeypatch.setenv("TRANSLATION_BATCH_MAX_CHARS", "10000")
+        await runtime.start()
+        calls: list[list[str]] = []
+
+        def fake_translate(sentences: list[str], config: ClientConfig) -> list[str]:
+            calls.append(list(sentences))
+            return [f"{config.target_lang}:{text}" for text in sentences]
+
+        class FakeEngine:
+            def batch_key(self, source_language: str, target_language: str) -> tuple[str, str, str]:
+                return ("fp", source_language, target_language)
+
+        monkeypatch.setattr("app.translator.get_translation_engine", lambda: FakeEngine())
+        config = ClientConfig(source_lang="nl", target_lang="en")
+        tasks = [
+            asyncio.create_task(runtime.run_translation(fake_translate, [f"t{i}"], config, session_id=f"s{i}"))
+            for i in range(4)
+        ]
+        await asyncio.gather(*tasks)
+        assert all(len(call) <= 2 for call in calls)
+        assert sum(len(call) for call in calls) == 4
+        await runtime.stop()
+
+    asyncio.run(run())

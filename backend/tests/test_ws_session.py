@@ -48,9 +48,12 @@ def make_session() -> SubtitleWebSocketSession:
     session._last_partial_at = 0.0
     session._processing_kind = None
     session._final_generation = 0
+    session._session_epoch = 0
     session._last_realtime_factor = 0.0
     session._backpressure_until = 0.0
     session._partial_suppression_reasons = {}
+    session._capture_audio_seconds = 0.0
+    session._session_audio_seconds = 0.0
     session.flush_requested = False
     return session
 
@@ -388,8 +391,9 @@ def test_audio_gap_resets_segmentation_state() -> None:
         assert session.segmenter.in_speech is False
         assert session.sentence_assembler._buffer == ""
         assert session._final_generation == 1
+        assert session._session_epoch == 1
         assert session.stats.audio_gap_resets == 1
-        assert acks == [{"type": "audio_gap_ack", "generation": 1}]
+        assert acks == [{"type": "audio_gap_ack", "generation": 1, "epoch": 1}]
 
     asyncio.run(run())
 

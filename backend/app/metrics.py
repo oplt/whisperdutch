@@ -27,9 +27,14 @@ class SeriesSummaryCache:
 
 
 def deque_fingerprint(values: deque[Any]) -> tuple[Any, ...]:
+    """Fingerprint must change when interior samples change, not only ends.
+
+    (len, first, last) alone collides for e.g. [1,2,3,1] vs [1,100,100,1].
+    Include sum/min/max so middle mutations invalidate cached p50/p95.
+    """
     if not values:
         return (0,)
-    return (len(values), values[0], values[-1])
+    return (len(values), values[0], values[-1], sum(values), min(values), max(values))
 
 
 def summary(
@@ -50,7 +55,12 @@ def cached_summary(
     values: list[int] | list[float] | deque[int] | deque[float],
     cache: SeriesSummaryCache,
 ) -> dict[str, float | int | None]:
-    fingerprint = deque_fingerprint(values) if isinstance(values, deque) else (len(values), values[0], values[-1])
+    if not values:
+        fingerprint: tuple[Any, ...] = (0,)
+    elif isinstance(values, deque):
+        fingerprint = deque_fingerprint(values)
+    else:
+        fingerprint = (len(values), values[0], values[-1], sum(values), min(values), max(values))
     if fingerprint == cache.fingerprint:
         return cache.summary
     cache.fingerprint = fingerprint

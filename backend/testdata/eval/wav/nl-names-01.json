@@ -1,0 +1,15 @@
+{
+  "id": "nl-names-01",
+  "path": "/home/polat/Desktop/Projects/dutch-subtitle-translator/backend/testdata/eval/wav/nl-names-01.wav",
+  "sample_rate": 16000,
+  "duration_seconds": 3.967,
+  "generator": "espeak",
+  "voice": "nl",
+  "reference_source": "Mevrouw De Vries belt met dokter Jansen in Rotterdam.",
+  "reference_translation_en": "Mrs. De Vries is calling Doctor Jansen in Rotterdam.",
+  "split": "tuning",
+  "tags": [
+    "names"
+  ],
+  "quality_note": "Synthetic TTS \u2014 relative ranking only, not human-speech WER."
+}

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install backend + dev tools
+        working-directory: backend
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Required quality gate
+        run: make check
+
+      - name: Firefox package build
+        run: make build-firefox
+
+      - name: Assert Firefox package contents
+        run: |
+          test -f dist/firefox/manifest.json
+          test -f dist/firefox/background.js
+          test -d dist/firefox/app
+          test -d dist/firefox/audio
+          python3 -c "import json; m=json.load(open('dist/firefox/manifest.json')); assert m['manifest_version']==3; assert 'gecko' in m.get('browser_specific_settings', {})"

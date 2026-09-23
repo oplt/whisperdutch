@@ -7,7 +7,7 @@ function createHarness(options = {}) {
   const connections = [];
   const mediaRequests = [];
   const streamOptions = [];
-  const track = { stopCalled: false, stop() { this.stopCalled = true; } };
+  const track = { stopCalled: false, onended: null, kind: "audio", readyState: "live", stop() { this.stopCalled = true; this.readyState = "ended"; } };
   const stream = {
     getTracks: () => [track],
     getAudioTracks: () => options.noAudioTracks ? [] : [track]
@@ -59,6 +59,7 @@ function createHarness(options = {}) {
     constructor() {
       this.name = "worklet";
       this.port = { postMessage() {}, onmessage: null };
+      this.onprocessorerror = null;
     }
 
     connect(target) { connections.push([this.name, target.name]); }
@@ -95,6 +96,8 @@ function createHarness(options = {}) {
     socket: { sendAudio: () => "sent" },
     onSilence: options.onSilence,
     onAudioRestored: options.onAudioRestored,
+    onTrackEnded: options.onTrackEnded,
+    onProcessorError: options.onProcessorError,
     silenceTimeoutMs: options.silenceTimeoutMs ?? 1000,
     captureLossTimeoutMs: options.captureLossTimeoutMs ?? 5000,
     setTimeout(callback, delay) {
@@ -336,5 +339,32 @@ test("audio arriving after a silence warning restores listening status", async (
   harness.controller.handleAudio({ data: { pcm: new ArrayBuffer(8), level: 0.2 } });
 
   assert.equal(restored, 1);
+  await harness.controller.close();
+});
+
+test("track ended notifies while capture is accepting audio", async () => {
+  const ended = [];
+  const harness = createHarness({
+    onTrackEnded: info => ended.push(info)
+  });
+
+  await harness.controller.start(42);
+  assert.equal(typeof harness.track.onended, "function");
+  harness.track.readyState = "ended";
+  harness.track.onended();
+  assert.equal(ended.length, 1);
+  assert.equal(ended[0].kind, "audio");
+  await harness.controller.close();
+});
+
+test("processor error notifies while capture is accepting audio", async () => {
+  const errors = [];
+  const harness = createHarness({
+    onProcessorError: info => errors.push(info)
+  });
+
+  await harness.controller.start(42);
+  harness.controller.worklet.onprocessorerror({ message: "boom" });
+  assert.deepEqual(errors, [{ message: "boom" }]);
   await harness.controller.close();
 });

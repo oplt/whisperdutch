@@ -1,0 +1,14 @@
+{
+  "path": "/home/polat/Desktop/Projects/dutch-subtitle-translator/backend/testdata/speech/dutch-espeak-baseline.wav",
+  "generator": "espeak",
+  "voice": "nl",
+  "sample_rate": 16000,
+  "duration_seconds": 13.817,
+  "reference_transcript": "Goedemorgen, dit is een korte Nederlandse testzin. De trein naar Amsterdam vertrekt over vijf minuten. Ik wil graag een kopje koffie met melk, alstublieft.",
+  "reference_lines": [
+    "Goedemorgen, dit is een korte Nederlandse testzin.",
+    "De trein naar Amsterdam vertrekt over vijf minuten.",
+    "Ik wil graag een kopje koffie met melk, alstublieft."
+  ],
+  "quality_note": "Synthetic TTS \u2014 useful for cue/latency path coverage, not for claiming human-speech WER."
+}

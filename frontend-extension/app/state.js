@@ -5,7 +5,7 @@
     connecting: ["capturing", "reconnecting", "stopping", "error"],
     capturing: ["paused", "reconnecting", "stopping", "error"],
     paused: ["capturing", "reconnecting", "stopping", "error"],
-    reconnecting: ["capturing", "stopping", "error"],
+    reconnecting: ["capturing", "paused", "stopping", "error"],
     stopping: ["idle", "error"],
     error: ["starting-backend", "idle"]
   });

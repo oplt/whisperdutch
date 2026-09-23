@@ -81,6 +81,23 @@ def _resolve_model_name() -> str:
     return os.getenv("BALANCED_ASR_MODEL", "large-v3-turbo").strip() or "large-v3-turbo"
 
 
+def _default_asr_cpu_threads() -> int:
+    cores = os.cpu_count() or 4
+    # Single ASR worker: use half the cores but leave room for CT2 translation + OS.
+    return max(2, min(8, cores // 2))
+
+
+def _resolve_asr_cpu_threads() -> int:
+    raw = os.getenv("ASR_CPU_THREADS", "").strip()
+    if not raw:
+        return _default_asr_cpu_threads()
+    try:
+        value = int(raw)
+    except ValueError:
+        return _default_asr_cpu_threads()
+    return max(1, value)
+
+
 class TranscriptionEngine:
     def __init__(self) -> None:
         self.model_name = _resolve_model_name()
@@ -89,25 +106,30 @@ class TranscriptionEngine:
             "ASR_COMPUTE_TYPE",
             "float16" if self.device == "cuda" else "int8",
         )
-        self.cpu_threads = int(os.getenv("ASR_CPU_THREADS", "4"))
+        self.cpu_threads = _resolve_asr_cpu_threads()
+        self.num_workers = max(1, int(os.getenv("ASR_NUM_WORKERS", "1")))
         self.runtime_settings = self._load_runtime_settings()
         self.decode_configs = self._build_decode_configs()
 
         logger.info(
-            "asr_model_loading model=%s device=%s compute_type=%s cpu_threads=%s vad=%s partial_word_ts=%s final_word_ts=%s",
+            "asr_model_loading model=%s device=%s compute_type=%s cpu_threads=%s num_workers=%s vad=%s partial_word_ts=%s final_word_ts=%s",
             self.model_name,
             self.device,
             self.compute_type,
             self.cpu_threads,
+            self.num_workers,
             self.runtime_settings.vad_filter,
             self.runtime_settings.partial_word_timestamps,
             self.runtime_settings.final_word_timestamps,
         )
+        self.local_files_only = _env_bool("LOCAL_MODELS_ONLY", True)
         self.model = WhisperModel(
             self.model_name,
             device=self.device,
             compute_type=self.compute_type,
             cpu_threads=self.cpu_threads,
+            num_workers=self.num_workers,
+            local_files_only=self.local_files_only,
         )
         logger.info("asr_model_ready info=%s", self.info())
 
@@ -117,6 +139,8 @@ class TranscriptionEngine:
             "asr_device": self.device,
             "asr_compute_type": self.compute_type,
             "asr_cpu_threads": self.cpu_threads,
+            "asr_num_workers": self.num_workers,
+            "asr_local_files_only": self.local_files_only,
             "asr_vad_filter": self.runtime_settings.vad_filter,
             "asr_partial_word_timestamps": self.runtime_settings.partial_word_timestamps,
             "asr_final_word_timestamps": self.runtime_settings.final_word_timestamps,

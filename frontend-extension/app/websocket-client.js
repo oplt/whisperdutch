@@ -16,6 +16,7 @@
       this.generation = 0;
       this.recoveryGeneration = 0;
       this.flushWaiter = null;
+      this.configAckWaiter = null;
       this.intentionalClose = false;
     }
 
@@ -84,6 +85,7 @@
           try {
             const payload = JSON.parse(event.data);
             if (payload.type === "flushed") this.resolveFlush(true);
+            if (payload.type === "config_ack") this.resolveConfigAck(true, payload);
             this.onMessage(payload, generation);
           } catch (error) {
             this.logger?.log("warn", "websocket_invalid_message", {
@@ -98,6 +100,32 @@
       if (!this.isOpen) return false;
       this.socket.send(typeof payload === "string" ? payload : JSON.stringify(payload));
       return true;
+    }
+
+    sendConfig(payload, options = {}) {
+      const sent = this.send(payload);
+      if (!sent || !options.awaitAck) return Promise.resolve(sent);
+      return this.waitForConfigAck(options.timeoutMs || 5000);
+    }
+
+    waitForConfigAck(timeoutMs = 5000) {
+      if (!this.isOpen) return Promise.resolve(false);
+      if (this.configAckWaiter) return this.configAckWaiter.promise;
+      let resolvePromise;
+      const promise = new Promise(resolve => {
+        resolvePromise = resolve;
+      });
+      const timeout = root.setTimeout(() => this.resolveConfigAck(false), timeoutMs);
+      this.configAckWaiter = { promise, resolve: resolvePromise, timeout };
+      return promise;
+    }
+
+    resolveConfigAck(result, payload = null) {
+      if (!this.configAckWaiter) return;
+      root.clearTimeout(this.configAckWaiter.timeout);
+      const { resolve } = this.configAckWaiter;
+      this.configAckWaiter = null;
+      resolve(result ? payload || true : false);
     }
 
     sendAudio(buffer) {
@@ -158,6 +186,7 @@
       this.intentionalClose = true;
       if (graceful) await this.flush(timeoutMs);
       this.resolveFlush(false);
+      this.resolveConfigAck(false);
       this.replaceCurrentSocket();
     }
 
@@ -190,12 +219,17 @@
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         if (recoveryGeneration !== this.recoveryGeneration) return null;
-        const delayMs = Math.min(5000, 500 * (2 ** Math.min(attempt - 1, 3)));
-        this.onReconnectAttempt({ attempt, maxAttempts, delayMs });
-        await sleep(delayMs);
-        if (recoveryGeneration !== this.recoveryGeneration) return null;
+        if (attempt > 1) {
+          const delayMs = Math.min(5000, 500 * (2 ** Math.min(attempt - 2, 3)));
+          this.onReconnectAttempt({ attempt, maxAttempts, delayMs });
+          await sleep(delayMs);
+          if (recoveryGeneration !== this.recoveryGeneration) return null;
+        } else {
+          this.onReconnectAttempt({ attempt, maxAttempts, delayMs: 0 });
+        }
         try {
           const url = await resolveUrl(attempt);
+          if (recoveryGeneration !== this.recoveryGeneration) return null;
           if (!url) throw new Error("Backend is not available yet.");
           const socket = await this.connect(url);
           if (recoveryGeneration !== this.recoveryGeneration) {

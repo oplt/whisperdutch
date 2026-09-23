@@ -36,6 +36,7 @@ class SegmentJob:
     created_at: float
     force: bool = True
     generation: int = 0
+    epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -94,10 +95,12 @@ class SubtitleWebSocketSession:
         self._processing_kind: str | None = None
         self._translation_in_progress = False
         self._final_generation = 0
+        self._session_epoch = 0
         self._last_realtime_factor = 0.0
         self._backpressure_until = 0.0
         self._partial_suppression_reasons: dict[str, int] = {}
-        self._session_audio_seconds = 0.0
+        self._capture_audio_seconds = 0.0
+        self._session_audio_seconds = 0.0  # last emitted timeline cursor (monotonic vs capture)
 
     async def run(self) -> None:
         origin = self.websocket.headers.get("origin")
@@ -141,13 +144,41 @@ class SubtitleWebSocketSession:
             if self.flush_requested:
                 continue
 
-            audio = pcm16le_to_float32(message["bytes"])
+            raw_bytes = message["bytes"]
+            if len(raw_bytes) == 0:
+                continue
+            if len(raw_bytes) % 2 != 0:
+                logger.warning("websocket_odd_pcm_frame client_id=%s bytes=%s", self.client_id, len(raw_bytes))
+                await self._safe_send_json(
+                    {
+                        "type": "protocol_error",
+                        "code": "odd_pcm_frame",
+                        "message": "PCM frames must contain an even number of bytes.",
+                    }
+                )
+                continue
+            max_frame_bytes = int(os.getenv("WS_MAX_PCM_FRAME_BYTES", str(16000 * 2 * 2)))  # 2s @ 16kHz mono
+            if len(raw_bytes) > max_frame_bytes:
+                logger.warning("websocket_oversized_pcm_frame client_id=%s bytes=%s", self.client_id, len(raw_bytes))
+                await self._safe_send_json(
+                    {
+                        "type": "protocol_error",
+                        "code": "oversized_pcm_frame",
+                        "message": "PCM frame exceeds the configured size limit.",
+                    }
+                )
+                continue
+
+            audio = pcm16le_to_float32(raw_bytes)
             await self._handle_audio(audio)
 
     async def _handle_audio(self, audio: np.ndarray) -> None:
         self.stats.audio_chunks += 1
         self.metrics.audio_chunks = self.stats.audio_chunks
         self.metrics.touch()
+        # Capture clock advances for every received sample (speech + silence).
+        sample_rate = max(1, int(self.config.sample_rate or 16000))
+        self._capture_audio_seconds += float(len(audio)) / float(sample_rate)
         finalized = self.segmenter.add(audio)
         if finalized is None:
             await self._maybe_enqueue_partial()
@@ -204,33 +235,54 @@ class SubtitleWebSocketSession:
             )
             return
 
+        previous = self.config
         self.config = parsed
         self.segmenter.sample_rate = self.config.sample_rate
         self.segmenter.set_mode(self.config.mode)
+        language_changed = previous.source_lang != parsed.source_lang
+        settings_changed = language_changed or previous.target_lang != parsed.target_lang or previous.context_prompt != parsed.context_prompt
+        if settings_changed:
+            self._bump_session_epoch("config")
+            self._discard_pending_partials("config")
+            if language_changed:
+                self.sentence_assembler.reset()
         self.sentence_assembler.configure(self.config.source_lang, self.config.context_prompt)
         self.metrics.mode = self.config.mode
         self.metrics.reconnects = self.config.reconnect_count
         self.metrics.touch()
-        logger.info("websocket_config client_id=%s config=%s", self.client_id, self.config.__dict__)
-        await self._send_json({"type": "config_ack", "config": self.config.__dict__})
+        logger.info("websocket_config client_id=%s config=%s epoch=%s", self.client_id, self.config.__dict__, self._session_epoch)
+        await self._send_json({"type": "config_ack", "config": self.config.__dict__, "epoch": self._session_epoch})
 
     async def _handle_audio_gap(self, payload: dict[str, Any]) -> None:
         self.stats.audio_gap_resets += 1
         self.metrics.audio_gap_resets = self.stats.audio_gap_resets
+        self._bump_session_epoch("audio_gap")
         self._next_final_generation()
         self._discard_pending_partials("audio_gap")
         self.segmenter.reset()
         self.sentence_assembler.reset()
+        # Gap semantics: keep capture timeline monotonic; optional client-reported
+        # gap duration advances the clock so later cues do not compress silence.
+        gap_seconds = payload.get("gap_seconds")
+        try:
+            if gap_seconds is not None:
+                self._capture_audio_seconds += max(0.0, float(gap_seconds))
+        except (TypeError, ValueError):
+            pass
+        self._session_audio_seconds = max(self._session_audio_seconds, self._capture_audio_seconds)
         logger.info(
-            "websocket_audio_gap client_id=%s generation=%s reason=%s dropped_chunks=%s buffered_audio_ms=%s",
+            "websocket_audio_gap client_id=%s generation=%s epoch=%s reason=%s dropped_chunks=%s buffered_audio_ms=%s capture_seconds=%.3f",
             self.client_id,
             self._final_generation,
+            self._session_epoch,
             payload.get("reason"),
             payload.get("dropped_chunks"),
             payload.get("buffered_audio_ms"),
+            self._capture_audio_seconds,
         )
-        await self._send_json({"type": "audio_gap_ack", "generation": self._final_generation})
-
+        await self._send_json(
+            {"type": "audio_gap_ack", "generation": self._final_generation, "epoch": self._session_epoch}
+        )
     async def _maybe_enqueue_partial(self) -> None:
         if not self.partial_enabled:
             return
@@ -306,6 +358,7 @@ class SubtitleWebSocketSession:
                 time.perf_counter(),
                 force=force,
                 generation=generation,
+                epoch=self._session_epoch,
             )
         )
 
@@ -337,6 +390,8 @@ class SubtitleWebSocketSession:
                 and job.kind == "final"
                 and pending[-1].audio is not None
                 and job.audio is not None
+                and pending[-1].config == job.config
+                and pending[-1].epoch == job.epoch
                 and len(pending[-1].audio) + len(job.audio)
                 <= int(job.config.sample_rate * float(os.getenv("PIPELINE_MERGE_MAX_SECONDS", "12")))
             ):
@@ -436,8 +491,21 @@ class SubtitleWebSocketSession:
     async def _process_final(self, job: SegmentJob) -> None:
         if job.audio is None:
             return
+        if job.epoch != self._session_epoch:
+            logger.info(
+                "final_discarded_stale_epoch client_id=%s job_epoch=%s session_epoch=%s",
+                self.client_id,
+                job.epoch,
+                self._session_epoch,
+            )
+            return
         queue_delay_ms = max(0, int((time.perf_counter() - job.created_at) * 1000))
-        chunk_offset = self._session_audio_seconds
+        sample_rate = max(1, int(job.config.sample_rate or 16000))
+        audio_seconds = float(len(job.audio)) / float(sample_rate)
+        # Segment start from capture clock at enqueue-complete approximation:
+        # capture cursor already includes this segment's samples.
+        chunk_offset = max(0.0, self._capture_audio_seconds - audio_seconds)
+        chunk_offset = max(chunk_offset, self._session_audio_seconds)
         try:
             final_result: Any = await get_inference_runtime().run_asr(
                 AsrPriority.FINAL,
@@ -450,24 +518,41 @@ class SubtitleWebSocketSession:
                 time_offset_seconds=chunk_offset,
             )
             sentences, meta = final_result
+        except InferenceRejectedError as exc:
+            logger.warning("final_asr_rejected client_id=%s reason=%s", self.client_id, exc)
+            await self._safe_send_json(
+                {
+                    "type": "overload",
+                    "code": "asr_queue_full",
+                    "message": "ASR backlog is full; speech was not accepted.",
+                }
+            )
+            return
         except Exception as exc:
             logger.exception("final_asr_failure client_id=%s", self.client_id)
             await self._safe_send_json(map_exception(exc).payload(debug_enabled=_env_bool("DEBUG_ERRORS", False)))
+            return
+        if job.epoch != self._session_epoch:
+            logger.info(
+                "final_result_discarded_stale_epoch client_id=%s job_epoch=%s session_epoch=%s",
+                self.client_id,
+                job.epoch,
+                self._session_epoch,
+            )
             return
         adapt_segmenter(self.segmenter, job.config, float(meta.get("realtime_factor") or 0.0))
         self._last_realtime_factor = float(meta.get("realtime_factor") or 0.0)
         await self._maybe_degrade_mode(job.config, float(meta.get("realtime_factor") or 0.0))
         self.metrics.asr_latency_ms.append(int(meta.get("asr_latency_ms") or 0))
-        audio_seconds = float(meta.get("audio_seconds") or 0.0)
-        self._session_audio_seconds += audio_seconds
-        self.metrics.audio_seconds.append(audio_seconds)
-        self.metrics.audio_seconds_total += audio_seconds
+        reported_audio_seconds = float(meta.get("audio_seconds") or audio_seconds)
+        self._session_audio_seconds = max(self._session_audio_seconds, chunk_offset + reported_audio_seconds)
+        self.metrics.audio_seconds.append(reported_audio_seconds)
+        self.metrics.audio_seconds_total += reported_audio_seconds
         self.metrics.realtime_factors.append(float(meta.get("realtime_factor") or 0.0))
         self.metrics.queue_delay_ms.append(queue_delay_ms)
         self.metrics.touch()
         meta["queue_delay_ms"] = queue_delay_ms
         await self._send_sentences(sentences, job.config, meta)
-
     async def _maybe_degrade_mode(self, config: ClientConfig, realtime_factor: float) -> None:
         if config.mode != "balanced" or realtime_factor <= 1.2:
             return
@@ -599,11 +684,15 @@ class SubtitleWebSocketSession:
                 config,
                 session_id=self.client_id,
             )
+            translation_failed = False
+            failure_message = ""
         except Exception as exc:
             logger.exception("translation_failure client_id=%s count=%s", self.client_id, len(sentences))
             safe_error = map_exception(exc)
             await self._safe_send_json(safe_error.payload(debug_enabled=_env_bool("DEBUG_ERRORS", False)))
-            translations = [safe_error.message for _ in sentences]
+            translations = ["" for _ in sentences]
+            translation_failed = True
+            failure_message = safe_error.message
         translation_latency_ms = int((time.perf_counter() - translation_start) * 1000)
         self.metrics.mt_latency_ms.append(translation_latency_ms)
 
@@ -611,6 +700,12 @@ class SubtitleWebSocketSession:
             total_latency_ms = queue_delay_ms + asr_latency_ms + translation_latency_ms
             self.metrics.total_latency_ms.append(total_latency_ms)
             self.metrics.touch()
+            if translation_failed:
+                quality = {"level": "error", "reasons": ["translation_failed"]}
+            elif translation:
+                quality = item.get("quality") or {"level": "good"}
+            else:
+                quality = item.get("quality") or {"level": "watch", "reasons": ["translation_unavailable"]}
             payload = {
                 "type": "final",
                 "id": item["id"],
@@ -627,9 +722,13 @@ class SubtitleWebSocketSession:
                 "audio_seconds": audio_seconds,
                 "asr_fragment": fragment,
                 "sentence_mode": True,
-                "quality": item.get("quality")
-                or ({"level": "good"} if translation else {"level": "watch", "reasons": ["translation_unavailable"]}),
+                "quality": quality,
             }
+            if translation_failed:
+                payload["translation_error"] = failure_message
+                payload["translation_available"] = False
+            else:
+                payload["translation_available"] = bool(translation)
             if item.get("start") is not None:
                 payload["start"] = item.get("start")
             if item.get("end") is not None:
@@ -665,6 +764,11 @@ class SubtitleWebSocketSession:
     def _next_final_generation(self) -> int:
         self._final_generation += 1
         return self._final_generation
+
+    def _bump_session_epoch(self, reason: str) -> int:
+        self._session_epoch += 1
+        logger.debug("session_epoch_bumped client_id=%s epoch=%s reason=%s", self.client_id, self._session_epoch, reason)
+        return self._session_epoch
 
     def _record_dropped_segment(self, dropped_kind: str, new_kind: str) -> None:
         self.stats.dropped_segments += 1
@@ -717,18 +821,26 @@ async def run_subtitle_session(websocket: WebSocket) -> None:
     await SubtitleWebSocketSession(websocket).run()
 
 
-def _is_flush(raw: str) -> bool:
+def _decode_json_object(raw: str) -> dict[str, Any] | None:
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _is_flush(raw: str) -> bool:
+    payload = _decode_json_object(raw)
+    if payload is None:
         return False
     return payload.get("type") == "flush"
 
 
 def _parse_audio_gap(raw: str) -> dict[str, Any] | None:
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
+    payload = _decode_json_object(raw)
+    if payload is None:
         return None
     if payload.get("type") != "audio_gap":
         return None
@@ -740,10 +852,9 @@ class ConfigIgnored(Exception):
 
 
 def _parse_config(raw: str) -> ClientConfig:
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ConfigIgnored from exc
+    payload = _decode_json_object(raw)
+    if payload is None:
+        raise ConfigIgnored
 
     if payload.get("type") != "config":
         raise ConfigIgnored

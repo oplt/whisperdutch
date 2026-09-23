@@ -188,7 +188,7 @@ def test_concurrent_translation_cache_lookups_remain_thread_safe() -> None:
             barrier.wait(timeout=2)
             key = engine.cache_key(f"line-{index % 4}")
             with engine._cache_lock:
-                engine.cache.setdefault(translator._cache_key_id(key), f"translation-{index % 4}")
+                engine.cache.setdefault(translator._cache_key_id(key), (f"translation-{index % 4}", None))
                 engine._cache_hits += 1
         except Exception as exc:  # pragma: no cover - surfaced below
             errors.append(exc)

@@ -11,7 +11,7 @@
   });
 
   class SubtitleView {
-    constructor(documentRef = root.document) {
+    constructor(documentRef = root.document, options = {}) {
       this.document = documentRef;
       const byId = id => documentRef.getElementById(id);
       this.status = byId("statusText");
@@ -28,6 +28,8 @@
       this.currentId = null;
       this.currentItem = null;
       this.historyRows = new Map();
+      this.historyOrder = [];
+      this.maxVisibleHistory = Math.max(10, Number(options.maxVisibleHistory) || 80);
       this.levelFrame = null;
       this.pendingLevel = 0;
       this.onDutchWordClick = null;
@@ -203,16 +205,14 @@
 
     showFinal(item) {
       if (this.currentId === item.id) {
-        this.currentItem = item;
-        this.renderRow(this.liveRow, item);
+        this.prependHistory(item);
+        this.currentId = null;
+        this.currentItem = null;
+        this.renderIdleLiveRow();
       } else if (this.historyRows.has(item.id)) {
         const row = this.historyRows.get(item.id);
         this.renderRow(row, item);
         this.promoteHistoryRow(row);
-      } else if (!this.currentItem) {
-        this.currentId = item.id;
-        this.currentItem = item;
-        this.renderRow(this.liveRow, item);
       } else {
         this.prependHistory(item);
       }
@@ -237,11 +237,31 @@
       this.renderRow(row, item);
       this.feed.insertBefore(row, this.liveRow.nextSibling);
       this.historyRows.set(item.id, row);
+      this.historyOrder.unshift(item.id);
+      this._trimVisibleHistory();
+    }
+
+    _trimVisibleHistory() {
+      while (this.historyOrder.length > this.maxVisibleHistory) {
+        const oldestId = this.historyOrder.pop();
+        const row = this.historyRows.get(oldestId);
+        if (row) {
+          row.remove();
+          this.historyRows.delete(oldestId);
+        }
+      }
     }
 
     promoteHistoryRow(row) {
       if (row === this.liveRow || row === this.liveRow.nextSibling) return;
       this.feed.insertBefore(row, this.liveRow.nextSibling);
+      const id = row.dataset.subtitleId;
+      if (!id) return;
+      const index = this.historyOrder.indexOf(id);
+      if (index > 0) {
+        this.historyOrder.splice(index, 1);
+        this.historyOrder.unshift(id);
+      }
     }
 
     restore(items) {
@@ -251,17 +271,17 @@
         this.renderIdleLiveRow();
         return;
       }
-      const current = visible[visible.length - 1];
-      visible.slice(0, -1).reverse().forEach(item => this.prependHistory(item));
-      this.currentId = current.id;
-      this.currentItem = current;
-      this.renderRow(this.liveRow, current);
+      // Show the most recent window only; full transcript remains in TranscriptStore.
+      const windowed = visible.slice(-this.maxVisibleHistory);
+      windowed.forEach(item => this.prependHistory(item));
+      this.renderIdleLiveRow();
     }
 
     clear(options = {}) {
       this.currentId = null;
       this.currentItem = null;
       this.historyRows.clear();
+      this.historyOrder = [];
       [...this.feed.children].forEach(child => {
         if (child !== this.liveRow) child.remove();
       });

@@ -14,7 +14,7 @@ Built for people who want readable bilingual subtitles with low latency, without
 | Browser | Chrome / Chromium / Brave / Firefox |
 | Platform | Linux (native messaging host); backend is portable Python |
 
-No license file or CI workflow is present in this repository at the time of writing.
+No license file is present in this repository at the time of writing. CI runs via `.github/workflows/ci.yml` (`make check` + Firefox package build).
 
 ---
 
@@ -459,7 +459,17 @@ whisperdutch/
 make check
 ```
 
-Runs: `compileall`, pytest (156 tests), extension syntax check, `npm test` (68 tests), ruff, mypy.
+Runs: `compileall`, pytest (backend, model-free), extension syntax check, `npm test`, **required** `ruff`, **required** `mypy`. Install tools via `make install-backend` (`requirements-dev.txt`). The gate fails if ruff/mypy are missing (no silent skip). GitHub Actions (`.github/workflows/ci.yml`) runs the same gate plus `make build-firefox`. Dependency upgrade decisions: `docs/compatibility-matrix.md`. Typed launch config is validated via `app.settings.AppSettings` and exposed at `/debug/config`.
+
+Real-model / GPU benchmarks are **not** part of `make check`. Companion commands:
+
+```bash
+make inventory                 # host + layered config JSON (no weight load)
+make baseline-representative   # Dutch speech path baseline (loads models)
+make evaluate-models           # ASR/MT quality comparison vs corpus-v1 (loads models)
+```
+
+Staged results: [`docs/improvement-report.md`](docs/improvement-report.md) · [`docs/final-report.md`](docs/final-report.md) · [`docs/model-evaluation.md`](docs/model-evaluation.md). Dependency upgrade matrix: [`docs/compatibility-matrix.md`](docs/compatibility-matrix.md).
 
 Individual steps:
 
@@ -478,13 +488,25 @@ Logs: `backend/logs/backend-YYYY-MM-DD.log`
 
 ## Benchmarking
 
-Reproducible harnesses (see [`docs/performance-next-baseline.md`](docs/performance-next-baseline.md)):
+Config/host inventory and quality-gate notes: [`docs/baseline-inventory.md`](docs/baseline-inventory.md).
+
+Synthetic Phase 1 provenance baseline (tone WAV / fake concurrency — limited claims): [`docs/performance-next-baseline.md`](docs/performance-next-baseline.md).
+
+Representative speech path baseline (`SpeechSegmenter` + `InferenceRuntime`): [`docs/performance-representative-baseline.md`](docs/performance-representative-baseline.md).
+
+Speed / DSP / threading measurements: [`docs/performance-speed-quality.md`](docs/performance-speed-quality.md).
 
 ```bash
 cd backend && source .venv/bin/activate
 set -a && [ -f .env ] && . ./.env && set +a
 
-# Full Phase 1 orchestrator
+# Host + layered config (no weight load)
+python scripts/inventory_runtime.py
+
+# Representative Dutch-speech baseline (loads models; explicit)
+python scripts/benchmark_representative.py
+
+# Full Phase 1 orchestrator (synthetic tone — provenance harness)
 python scripts/benchmark_phase1.py --max-segments 4
 
 # Individual harnesses

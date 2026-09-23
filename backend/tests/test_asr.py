@@ -99,3 +99,11 @@ def test_asr_rejects_invalid_invariant_configuration(monkeypatch) -> None:
         assert "ASR_NO_SPEECH_THRESHOLD" in str(exc)
     else:
         raise AssertionError("invalid threshold was accepted")
+
+
+def test_asr_cpu_threads_auto_sizes_from_core_count(monkeypatch) -> None:
+    monkeypatch.delenv("ASR_CPU_THREADS", raising=False)
+    monkeypatch.setattr(asr.os, "cpu_count", lambda: 16)
+    assert asr._default_asr_cpu_threads() == 8
+    monkeypatch.setattr(asr.os, "cpu_count", lambda: 4)
+    assert asr._default_asr_cpu_threads() == 2

@@ -96,3 +96,27 @@ def test_partial_snapshot_is_detached_from_reusable_buffer() -> None:
     snapshot[:] = 9
 
     assert segmenter.current_snapshot().tolist() == [1, 1, 1, 1]
+
+
+def test_quiet_speech_passes_when_threshold_allows() -> None:
+    # Default SILENCE_RMS_THRESHOLD=0.010 gates this quiet voice; lowering preserves it.
+    quiet = np.full(800, 0.008, dtype=np.float32)
+    gated = SpeechSegmenter(
+        sample_rate=16000,
+        silence_rms_threshold=0.010,
+        min_speech_seconds=0.01,
+        end_silence_seconds=0.01,
+        pre_roll_seconds=0.0,
+    )
+    assert gated.add(quiet) is None
+    assert gated.in_speech is False
+
+    open_gate = SpeechSegmenter(
+        sample_rate=16000,
+        silence_rms_threshold=0.006,
+        min_speech_seconds=0.01,
+        end_silence_seconds=0.01,
+        pre_roll_seconds=0.0,
+    )
+    assert open_gate.add(quiet) is None
+    assert open_gate.in_speech is True

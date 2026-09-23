@@ -65,13 +65,68 @@ test("SubtitleSocket ignores stale socket callbacks after replacement", async ()
 test("SubtitleSocket recovery stops when cancelled", async () => {
   FakeWebSocket.instances = [];
   const socket = new SubtitleSocket({ WebSocketImpl: FakeWebSocket });
-  const recovery = socket.recover(async () => "ws://127.0.0.1:8000/ws/subtitles", {
+  let releaseUrl;
+  const urlGate = new Promise(resolve => { releaseUrl = resolve; });
+  const recovery = socket.recover(async () => {
+    await urlGate;
+    return "ws://127.0.0.1:8000/ws/subtitles";
+  }, {
     maxAttempts: 3,
     sleep: async () => {}
   });
   socket.cancelRecovery();
+  releaseUrl();
   const result = await recovery;
   assert.equal(result, null);
+});
+
+test("SubtitleSocket recovery tries immediately then backs off", async () => {
+  FakeWebSocket.instances = [];
+  const delays = [];
+  const attempts = [];
+  let failOnce = true;
+  const socket = new SubtitleSocket({
+    WebSocketImpl: FakeWebSocket,
+    onReconnectAttempt: meta => attempts.push(meta)
+  });
+  const openPoll = setInterval(() => {
+    for (const ws of FakeWebSocket.instances) {
+      if (ws.readyState === 0) ws.open();
+    }
+  }, 0);
+  try {
+    await socket.recover(async () => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("not ready");
+      }
+      return "ws://127.0.0.1:8000/ws/subtitles";
+    }, {
+      maxAttempts: 3,
+      sleep: async delay => { delays.push(delay); }
+    });
+  } finally {
+    clearInterval(openPoll);
+  }
+
+  assert.equal(attempts[0]?.delayMs, 0);
+  assert.ok(delays[0] >= 500);
+  assert.equal(attempts.length, 2);
+});
+
+test("SubtitleSocket waits for config_ack after sendConfig", async () => {
+  FakeWebSocket.instances = [];
+  const socket = new SubtitleSocket({ WebSocketImpl: FakeWebSocket });
+  const connectPromise = socket.connect("ws://127.0.0.1:8000/ws/subtitles");
+  const ws = FakeWebSocket.instances[0];
+  ws.open();
+  await connectPromise;
+
+  const ackPromise = socket.sendConfig({ type: "config", mode: "balanced" }, { awaitAck: true, timeoutMs: 1000 });
+  assert.match(ws.sent[0], /"type":"config"/);
+  ws.onmessage?.({ data: JSON.stringify({ type: "config_ack", epoch: 1 }) });
+  const ack = await ackPromise;
+  assert.equal(ack.epoch, 1);
 });
 
 test("sendAudio uses audio-time backpressure thresholds", async () => {

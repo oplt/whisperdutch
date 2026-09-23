@@ -66,7 +66,10 @@
 
     closePrevious(nextStartMs) {
       const previous = this.items[this.items.length - 1];
-      if (previous) previous.endMs = Math.max(previous.startMs + 800, nextStartMs - 120);
+      // Only adjust provisional pending display ends. Authoritative audio end times
+      // from finalized payloads must not be overwritten by the next cue's arrival.
+      if (!previous || !previous.pending) return;
+      previous.endMs = Math.max(previous.startMs + 800, nextStartMs - 120);
     }
 
     clear() {
@@ -105,7 +108,19 @@
         transcriptItems: this.items
       };
       sessions[this.sessionId] = snapshot;
-      this.storage?.setItem(STORAGE_KEY, JSON.stringify(sessions));
+      const payload = JSON.stringify(sessions);
+      const write = () => {
+        try {
+          this.storage?.setItem(STORAGE_KEY, payload);
+          this.lastPersistError = null;
+        } catch (error) {
+          this.lastPersistError = error;
+        }
+      };
+      // Keep the capture/render path free of synchronous localStorage cost.
+      if (typeof root.queueMicrotask === "function") root.queueMicrotask(write);
+      else if (typeof root.setTimeout === "function") root.setTimeout(write, 0);
+      else write();
       return snapshot;
     }
 
