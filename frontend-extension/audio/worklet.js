@@ -58,15 +58,53 @@ function designLowpassTaps(numTaps, cutoffNormalized) {
 }
 
 function mixInputFrame(channels, frameIndex) {
-  let sum = 0;
-  let count = 0;
+  // Prefer the loudest channel this frame without averaging (averaging diluted
+  // tabCapture speech when one channel was silent/noise and hurt ASR).
+  if (!channels?.length) return 0;
+  if (channels.length === 1) {
+    const only = channels[0];
+    return only && frameIndex < only.length ? only[frameIndex] : 0;
+  }
+
+  let best = 0;
+  let bestAbs = -1;
+  let sawSample = false;
   for (let channelIndex = 0; channelIndex < channels.length; channelIndex += 1) {
     const channel = channels[channelIndex];
     if (!channel || frameIndex >= channel.length) continue;
-    sum += channel[frameIndex];
-    count += 1;
+    const sample = channel[frameIndex];
+    const abs = sample < 0 ? -sample : sample;
+    // Prefer channel 0 on ties so Chromium tabCapture stays stable.
+    if (!sawSample || abs > bestAbs || (abs === bestAbs && channelIndex === 0)) {
+      best = sample;
+      bestAbs = abs;
+      sawSample = true;
+    }
   }
-  return count ? sum / count : 0;
+  return sawSample ? best : 0;
+}
+
+function pickCaptureChannel(channels, frameCount) {
+  if (!channels?.length) return 0;
+  if (channels.length === 1) return 0;
+  let bestIndex = 0;
+  let bestEnergy = -1;
+  const frames = Math.max(0, frameCount | 0);
+  for (let channelIndex = 0; channelIndex < channels.length; channelIndex += 1) {
+    const channel = channels[channelIndex];
+    if (!channel?.length) continue;
+    let energy = 0;
+    const limit = Math.min(frames || channel.length, channel.length);
+    for (let i = 0; i < limit; i += 8) {
+      const sample = channel[i];
+      energy += sample * sample;
+    }
+    if (energy > bestEnergy) {
+      bestEnergy = energy;
+      bestIndex = channelIndex;
+    }
+  }
+  return bestIndex;
 }
 
 class StreamingPCM16Resampler {
@@ -82,6 +120,9 @@ class StreamingPCM16Resampler {
 
     const downsample = targetRate < sourceRate;
     const tapCount = Number(options.antialiasTaps);
+    // Keep the low-pass enabled for live downsampling. Its 15-tap default adds
+    // sub-millisecond group delay while preventing >8 kHz content from folding
+    // into Whisper's speech band. Callers can still opt out explicitly.
     this.antialiasEnabled = options.antialias !== false && downsample;
     if (this.antialiasEnabled) {
       // Cut slightly below target Nyquist expressed at the source sample rate.
@@ -231,8 +272,10 @@ class PCMWorkletProcessor extends WorkletProcessorBase {
     const frameCount = input[0]?.length || input.find(channel => channel && channel.length)?.length || 0;
     if (!frameCount) return true;
 
+    const channelIndex = pickCaptureChannel(input, frameCount);
+    const channel = input[channelIndex];
     for (let i = 0; i < frameCount; i += 1) {
-      const sample = mixInputFrame(input, i);
+      const sample = channel && i < channel.length ? channel[i] : mixInputFrame(input, i);
       this.sourceBuffer[this.sourceOffset] = sample;
       this.squareSum += sample * sample;
       this.sourceOffset += 1;
@@ -267,6 +310,7 @@ const api = {
   StreamingPCM16Resampler,
   designLowpassTaps,
   mixInputFrame,
+  pickCaptureChannel,
   DEFAULT_WORKLET_BATCH_DURATION_MS,
   MIN_WORKLET_BATCH_DURATION_MS,
   MAX_WORKLET_BATCH_DURATION_MS,

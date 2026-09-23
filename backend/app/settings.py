@@ -57,7 +57,7 @@ class AppSettings(BaseSettings):
     inference_translation_max_concurrent: int = Field(default=1, ge=1)
     inference_asr_max_pending: int = Field(default=16, ge=1)
     inference_translation_max_pending: int = Field(default=32, ge=1)
-    translation_batch_collect_ms: float = Field(default=2.0, ge=0.0)
+    translation_batch_collect_ms: float = Field(default=0.0, ge=0.0)
     translation_batch_max_requests: int = Field(default=8, ge=1)
     translation_batch_max_chars: int = Field(default=2400, ge=1)
 

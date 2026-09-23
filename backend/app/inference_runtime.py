@@ -120,7 +120,9 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _translation_batch_collect_ms() -> float:
-    raw = os.getenv("TRANSLATION_BATCH_COLLECT_MS", "2").strip()
+    # Default 0: do not artificially delay the first waiting translation job.
+    # Operators can raise this (e.g. 2) to coalesce cross-session bursts.
+    raw = os.getenv("TRANSLATION_BATCH_COLLECT_MS", "0").strip()
     try:
         return max(0.0, float(raw))
     except ValueError:

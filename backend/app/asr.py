@@ -82,9 +82,9 @@ def _resolve_model_name() -> str:
 
 
 def _default_asr_cpu_threads() -> int:
-    cores = os.cpu_count() or 4
-    # Single ASR worker: use half the cores but leave room for CT2 translation + OS.
-    return max(2, min(8, cores // 2))
+    # Historical default was a fixed 4. Auto-upsizing to 8 fought CT2 on CPU
+    # and increased end-to-end subtitle latency.
+    return 4
 
 
 def _resolve_asr_cpu_threads() -> int:

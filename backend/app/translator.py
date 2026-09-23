@@ -278,21 +278,30 @@ class TranslationEngine:
             self.tokenizer_name,
             local_files_only=_env_bool("LOCAL_MODELS_ONLY", True),
         )
-        self.inter_threads = max(1, int(os.getenv("TRANSLATION_INTER_THREADS", "1")))
-        # Intra-op threads for one decode; keep modest so ASR + MT do not oversubscribe.
-        default_intra = max(1, min(4, (os.cpu_count() or 4) // 4))
+        # Only override CT2 threading when explicitly configured. Forcing
+        # intra_threads=4 on a 16-core CPU cut translation parallelism vs the
+        # previous library defaults and showed up as higher MT latency.
+        raw_inter = os.getenv("TRANSLATION_INTER_THREADS", "").strip()
         raw_intra = os.getenv("TRANSLATION_INTRA_THREADS", "").strip()
-        try:
-            self.intra_threads = max(1, int(raw_intra)) if raw_intra else default_intra
-        except ValueError:
-            self.intra_threads = default_intra
-        self.translator = ctranslate2.Translator(
-            str(model_path),
-            device=self.device,
-            compute_type=self.compute_type,
-            inter_threads=self.inter_threads,
-            intra_threads=self.intra_threads,
-        )
+        translator_kwargs: dict[str, Any] = {
+            "device": self.device,
+            "compute_type": self.compute_type,
+        }
+        inter_threads: int | None
+        intra_threads: int | None
+        if raw_inter:
+            inter_threads = max(1, int(raw_inter))
+            translator_kwargs["inter_threads"] = inter_threads
+        else:
+            inter_threads = None
+        if raw_intra:
+            intra_threads = max(1, int(raw_intra))
+            translator_kwargs["intra_threads"] = intra_threads
+        else:
+            intra_threads = None
+        self.inter_threads = inter_threads
+        self.intra_threads = intra_threads
+        self.translator = ctranslate2.Translator(str(model_path), **translator_kwargs)
         if self.model_family in {"nllb", "m2m100"}:
             self.language_metadata = TranslationLanguageMetadata(tokenizer=self.tokenizer, model_family=self.model_family)
         self.backend = create_ctranslate2_backend(

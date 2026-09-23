@@ -160,10 +160,13 @@
           return;
         }
         await this.loadTranslationCapabilities();
-        const acked = await this.sendConfig({ awaitAck: true, timeoutMs: 5000 });
+        // Prefer a quick ack, but do not block listening on a slow/missing ack —
+        // audio is already capturing and a hard fail felt like multi-second lag.
+        const acked = await this.sendConfig({ awaitAck: true, timeoutMs: 1500 });
         if (!this.state.owns(generation)) return;
         if (!acked) {
-          throw new Error("Backend did not acknowledge session configuration.");
+          this.logger.log("warn", "config_ack_timeout", { phase: "start" });
+          this.sendConfig();
         }
         this.startedAt = Date.now();
         this.state.transition("capturing", "Listening");
@@ -211,10 +214,11 @@
           return connection?.wsUrl || root.BackendClient.getWsUrl();
         });
         if (!this.state.owns(generation)) return;
-        const acked = await this.sendConfig({ awaitAck: true, timeoutMs: 5000 });
+        const acked = await this.sendConfig({ awaitAck: true, timeoutMs: 2000 });
         if (!this.state.owns(generation)) return;
         if (!acked) {
-          throw new Error("Backend did not acknowledge session configuration after reconnect.");
+          this.logger.log("warn", "config_ack_timeout", { phase: "reconnect" });
+          this.sendConfig();
         }
         if (wasPaused) {
           this.capture.setPaused(true);

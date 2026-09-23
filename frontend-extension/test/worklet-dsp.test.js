@@ -4,6 +4,7 @@ const test = require("node:test");
 const {
   StreamingPCM16Resampler,
   mixInputFrame,
+  pickCaptureChannel,
   designLowpassTaps
 } = require("../audio/worklet.js");
 
@@ -43,13 +44,27 @@ test("anti-alias lowpass attenuates a 12 kHz tone relative to 1 kHz after 48→1
   assert.ok(low > 0.05);
 });
 
-test("mixInputFrame averages available channels including right-only speech", () => {
+test("anti-alias filtering is enabled by default when downsampling", () => {
+  const resampler = new StreamingPCM16Resampler(48000, 16000);
+  assert.equal(resampler.antialiasEnabled, true);
+});
+
+test("mixInputFrame prefers the active speech channel without diluting amplitude", () => {
   const left = Float32Array.from([0, 0, 0, 0]);
   const right = Float32Array.from([0.5, -0.5, 0.25, -0.25]);
-  assert.equal(mixInputFrame([left, right], 0), 0.25);
-  assert.equal(mixInputFrame([left, right], 1), -0.25);
+  assert.equal(mixInputFrame([left, right], 0), 0.5);
+  assert.equal(mixInputFrame([left, right], 1), -0.5);
   assert.equal(mixInputFrame([null, right], 2), 0.25);
   assert.equal(mixInputFrame([right], 3), -0.25);
+  // Left-only speech must stay full-scale (no average with silent right).
+  assert.equal(mixInputFrame([right, left], 0), 0.5);
+});
+
+test("pickCaptureChannel selects the energetic channel for a block", () => {
+  const left = Float32Array.from([0, 0, 0, 0, 0, 0, 0, 0]);
+  const right = Float32Array.from([0.4, -0.4, 0.4, -0.4, 0.4, -0.4, 0.4, -0.4]);
+  assert.equal(pickCaptureChannel([left, right], 8), 1);
+  assert.equal(pickCaptureChannel([right, left], 8), 0);
 });
 
 test("designLowpassTaps yields unity DC gain", () => {
