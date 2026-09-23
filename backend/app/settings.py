@@ -74,6 +74,11 @@ class AppSettings(BaseSettings):
     def optional_int_empty(cls, value: Any) -> Any:
         return _empty_to_none(value)
 
+    @field_validator("translation_inter_threads", mode="before")
+    @classmethod
+    def translation_inter_threads_default(cls, value: Any) -> Any:
+        return 1 if isinstance(value, str) and not value.strip() else value
+
     @field_validator("asr_device", "translation_device", mode="before")
     @classmethod
     def device_default(cls, value: Any) -> str:

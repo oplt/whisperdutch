@@ -179,11 +179,11 @@
     }
 
     idleSource() {
-      return `Listening for ${this.languageName(this.sourceLang)} speech…`;
+      return `Listening…`;
     }
 
     idleTranslation() {
-      return `${this.languageName(this.targetLang)} translation will appear here.`;
+      return `translation...`;
     }
 
     languageName(code) {

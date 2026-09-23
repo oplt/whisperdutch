@@ -110,7 +110,7 @@ class SubtitleSegmenter:
             gap = max(0.0, word.start - previous.end)
             candidate_text = " ".join(item.text for item in current + [word])
             candidate_duration = word.end - current[0].start
-            should_break = self._should_break(current, word, candidate_text, candidate_duration, gap, silence_gap)
+            should_break = self._should_break(current, candidate_text, candidate_duration, gap, silence_gap)
             if should_break:
                 groups.append(current)
                 current = [word]
@@ -125,7 +125,6 @@ class SubtitleSegmenter:
     def _should_break(
         self,
         current: list[ASRWord],
-        next_word: ASRWord,
         candidate_text: str,
         candidate_duration: float,
         gap: float,
